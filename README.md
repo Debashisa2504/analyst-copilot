@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # The Analyst Copilot
 
 Grounded question-answering over SEC 10-K/10-Q/8-K filings, powered by the PRISM architecture.
@@ -280,3 +281,7 @@ Set `LLM_FALLBACK_PROVIDER=ollama` for an offline fallback that never hard-fails
 2. **Page-estimation drift** ±1–3 pages on real filings, absorbed by the ±12-page scoring tolerance.
 3. **Intelligence Layer metrics** require a real extraction pass — red flags return empty without a structured metrics dict populated by the cache.
 4. **Ollama fallback** is code-complete but not live-tested — do one end-to-end check before relying on it in production.
+=======
+# analyst-copilot
+Ask your 10-K anything — with receipts.
+>>>>>>> 14c8283f04fd2a1e54671f03a6ca2de8a0d51712
