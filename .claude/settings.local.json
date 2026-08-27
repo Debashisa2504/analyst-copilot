@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python.exe -c \":*)",
+      "Bash(.venv/Scripts/python.exe -m scripts.reparse_pages --doc BOEING_2018_10K --dry-run)"
+    ]
+  }
+}

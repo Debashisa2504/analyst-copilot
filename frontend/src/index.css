@@ -1,0 +1,14 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body { height: 100%; }
+body { background-color: #0b0e14; }
+
+::selection { background: #274a99; color: #e7eaf0; }
+
+/* thin, quiet scrollbars fit the institutional feel */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #232937; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #323b4d; }

@@ -1,0 +1,34 @@
+# Core API
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+python-dotenv==1.0.1
+python-multipart==0.0.9
+requests==2.32.3
+
+# HTML/Parsing
+beautifulsoup4==4.12.3
+lxml==5.3.0
+
+# Search & Indexing
+rank-bm25==0.2.2
+chromadb==0.5.20
+sentence-transformers==3.1.1
+
+# Graph (footnote graph)
+networkx==3.3
+
+# Database (vector store + structured cache + learning loops)
+psycopg[binary]>=3.0.0
+pgvector>=0.3.0
+numpy==1.26.4
+aiosqlite==0.20.0
+
+# Testing
+pytest==8.3.3
+pytest-asyncio==0.24.0
+
+# LLM provider SDKs
+openai==1.57.0
+httpx<0.28
+google-generativeai==0.8.3

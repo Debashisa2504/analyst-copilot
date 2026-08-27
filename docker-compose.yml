@@ -1,0 +1,46 @@
+# docker-compose.yml — Local Docker launch for The Analyst Copilot
+#
+# Quick start:
+#   cp .env.example .env   # fill in LLM API key
+#   docker compose up --build
+#
+# Backend:  http://localhost:8000
+# Frontend: http://localhost:5173
+#
+# Filings and search index persist via bind mounts (./filings, ./data).
+# docker compose down && docker compose up does NOT lose indexed data.
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - API_HOST=0.0.0.0
+      - CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+    volumes:
+      - ./filings:/app/filings
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_BASE=http://localhost:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
