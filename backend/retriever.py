@@ -41,6 +41,14 @@ FINANCIAL_SYNONYMS: Dict[str, str] = {
     "eps": "Earnings per share diluted basic net income per share",
     "gross margin": "Gross profit Net sales Cost of goods sold gross margin percentage",
     "r&d": "Research and development expense",
+    # Balance sheet items — common FinanceBench question targets
+    "ppne": "property plant and equipment net PP&E",
+    "net ppne": "property plant and equipment net PP&E",
+    "property, plant": "property plant and equipment PP&E net",
+    "current assets": "Total current assets cash inventories receivable",
+    "total current assets": "Total current assets cash inventories receivable",
+    "depreciation and amortization": "depreciation amortization D&A cash flows",
+    "ebitda": "operating income depreciation amortization EBITDA",
 }
 
 # Map simple query keywords to cache metric keys

@@ -1,6 +1,4 @@
 """
-backend/parser.py
-------------------
 HTML/iXBRL parsing engine for SEC filings (10-K / 10-Q / 8-K).
 
 Responsibilities (see ARD-001, ARD-004):
@@ -332,72 +330,45 @@ def parse_filing(
 
     # ------------------------------------------------------------------
     # Pre-scan pass: detect the printed→electronic page offset BEFORE
-    # emitting any segments.
+    # emitting any segments.  (Option D)
     #
-    # The previous approach called maybe_lock_offset() only inside the
-    # prose branch of the main loop, so page numbers that live in SEC
-    # layout-table cells (the most common footer placement) were never
-    # scanned and offset remained 0.
+    # Walk all <div> elements, tracking the electronic page counter via
+    # CSS page-break markers.  For each electronic page, record the LAST
+    # <div> whose entire stripped text is a bare 1-4 digit number
+    # (overwriting on each match → "last wins" per page).
     #
-    # Here we walk every leaf text node in document order — including
-    # table cells — to find the first standalone printed page number.
-    # We mirror the same CSS-marker page-counter logic used in the main
-    # traversal so that `scan_page` at the moment we find the printed
-    # number matches the `current_page` at that point in the main loop.
+    # Then find the first run of 3 consecutive electronic pages whose
+    # last-numbers are also consecutive (N, N+1, N+2).  Real footer page
+    # numbers form this monotonic pattern; TOC references (scattered,
+    # non-sequential across pages) and iXBRL data values (also non-
+    # sequential as a page-by-page series) do not.  This makes the
+    # Boeing iXBRL false-positive (<div>14</div> at electronic page 2)
+    # harmless because it never participates in a 3-page run.
     # ------------------------------------------------------------------
+    _SOLO_NUM_RE = re.compile(r'^\d{1,4}$')
+    _page_last_num: dict = {}   # {electronic_page: int}
+    _p = 1
+    for _el in (el for el in body.descendants if isinstance(el, Tag)):
+        if use_markers:
+            _s = _style_of(_el)
+            if ("page-break-before" in _s or "page-break-after" in _s) and "always" in _s:
+                _p += 1
+        if _el.name == "div":
+            _t = _el.get_text(" ", strip=True)
+            if _t and _SOLO_NUM_RE.match(_t):
+                _page_last_num[_p] = int(_t)   # overwrite → keeps LAST seen per page
+
     offset = 0
     offset_locked = False
-    _scan_page = 1
-    _scan_wc = 0
-
-    _PROSE_TAGS = ("p", "div", "span", "li")
-    _CELL_TAGS  = ("td", "th")
-    for _el in (el for el in body.descendants if isinstance(el, Tag)):
-        # Mirror the CSS-marker page bump from the main loop.
-        if use_markers:
-            _style = _style_of(_el)
-            if ("page-break-before" in _style or "page-break-after" in _style) and "always" in _style:
-                _scan_page += 1
-
-        # Only extract text from true leaf elements so the word-count
-        # fallback path stays consistent with the main traversal:
-        #  - Prose (p/div/span/li): skip if it has child prose/table elements
-        #    (those children will be visited in their own iteration).
-        #  - Table cells (td/th): only consider cells whose parent row has
-        #    exactly ONE non-empty cell — the classic single-cell footer row
-        #    layout used by SEC EDGAR HTML for printed page numbers.
-        #    Cells inside multi-column data rows (Revenue | 2023 | 2022) are
-        #    skipped so we never mistake a table value for a page number.
-        if _el.name in _PROSE_TAGS:
-            if _el.find(_PROSE_TAGS + ("table",)) is not None:
-                continue
-        elif _el.name in _CELL_TAGS:
-            _row = _el.find_parent("tr")
-            if _row is None:
-                continue
-            # Count non-empty sibling cells in this row.
-            _nonempty = sum(
-                1 for _c in _row.find_all(["td", "th"])
-                if (_c.get_text(strip=True) or "")
-            )
-            if _nonempty != 1:
-                continue
-        else:
-            continue
-
-        _txt = _el.get_text(" ", strip=True)
-        if not _txt or len(_txt) < 2:
-            continue
-
-        if not use_markers:
-            _scan_wc += len(_txt.split())
-            _scan_page = max(1, _scan_wc // WORDS_PER_PAGE_FALLBACK + 1)
-
-        _printed = extract_printed_page_number(_txt)
-        if _printed is not None:
-            offset = _printed - _scan_page
+    _pages = sorted(_page_last_num.keys())
+    for _ep in _pages[:-2]:
+        _n0 = _page_last_num[_ep]
+        _n1 = _page_last_num.get(_ep + 1)
+        _n2 = _page_last_num.get(_ep + 2)
+        if _n1 == _n0 + 1 and _n2 == _n0 + 2:
+            offset = _n0 - _ep
             offset_locked = True
-            break  # one calibration point is enough
+            break
 
     def bump_page_from_markers(tag: Tag):
         nonlocal current_page
@@ -460,7 +431,10 @@ def parse_filing(
         # p/div/span/li elements, because those children will be visited separately
         # and produce the same text, causing duplicate segments/chunks.
         if element.name in ("p", "div", "span", "li") and element.find("table") is None:
-            if element.find(["p", "div", "span", "li"]) is not None:
+            # Skip containers: child prose tags OR iXBRL wrapper tags mean this
+            # element's text will be visited again in the child iteration.
+            if element.find(["p", "div", "span", "li",
+                             "ix:nonfraction", "ix:nonnumeric", "ix:fraction"]) is not None:
                 continue
             text = element.get_text(" ", strip=True)
             if not text or len(text) < 2:

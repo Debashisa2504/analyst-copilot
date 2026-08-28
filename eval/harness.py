@@ -106,7 +106,10 @@ def run_evaluation(
     rows = _load_questions(questions_path, max_questions)
     summary = EvalSummary()
 
-    for row in rows:
+    total = len(rows)
+    print(f"[eval] {total} questions loaded from {questions_path.name}", flush=True)
+
+    for i, row in enumerate(rows, start=1):
         question = row["question"]
         doc_name = "ALL" if scope == "global" else row["doc_name"]
         ground_truth = row["answer"]
@@ -115,6 +118,9 @@ def run_evaluation(
             page = ev.get("evidence_page_num")
             if page is not None:
                 evidence_pages.append(page)
+
+        short_q = question[:60].replace("\n", " ")
+        print(f"[{i:>2}/{total}] {doc_name:<30} {short_q}...", end=" ", flush=True)
 
         response = asyncio.run(answer_question(question, doc_name=doc_name))
 
@@ -125,6 +131,9 @@ def run_evaluation(
             evidence_pages=evidence_pages,
             abstained=response.abstained,
         )
+
+        _SCORE_SYMBOL = {1: "+1 CORRECT", 0: " 0 abstain" if response.abstained else " 0 pg-miss", -1: "-1 WRONG"}
+        print(_SCORE_SYMBOL.get(score, str(score)), flush=True)
 
         summary.records.append(
             EvalRecord(
@@ -139,6 +148,15 @@ def run_evaluation(
                 score=score,
             )
         )
+
+        # Running tally every 5 questions
+        if i % 5 == 0 or i == total:
+            s = summary
+            print(
+                f"  --- running total: {s.correct}+1  {s.abstained} abstain  "
+                f"{s.wrong}-1  net={s.net_score} ---",
+                flush=True,
+            )
 
     return summary
 

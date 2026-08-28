@@ -7,6 +7,20 @@ FinanceBench-style rubric scoring engine.
      0  honest abstention
      0  correct answer BUT wrong page location
     -1  confidently wrong answer
+
+Answer matching strategy (two-tier):
+  1. Fast numeric check  — if both answers contain numbers, compare magnitudes.
+     Handles sign conventions (CapEx shown as negative in filing, positive in GT)
+     and unit differences (8738 millions ≈ 8.7 billions within 1% tolerance).
+  2. LLM semantic judge  — for text/qualitative answers where numeric check is
+     not applicable, ask the VERIFY-LLM (same provider as QA pipeline) whether
+     the two answers convey the same financial fact. This replaces brittle regex
+     heuristics and handles:
+       - Paraphrasing ("declined" vs "decreased")
+       - Directional equivalence ("Yes. It decreased." == "Yes, VaR fell by $16M")
+       - Partial entity matches ("gain on completion of JV" == "gain associated
+         with completion of Consumer Healthcare JV transaction")
+       - Negation equivalence ("no acquisitions" == "did not make any acquisitions")
 """
 from __future__ import annotations
 
@@ -15,13 +29,15 @@ from typing import Any, List
 
 from backend.config import PAGE_LOCATION_TOLERANCE
 
-_MD_RE = re.compile(r"[*_`]")
-_NUMBER_RE = re.compile(r"-?\(?\$?\s*[\d,]+(?:\.\d+)?\)?%?")
+_MD_RE       = re.compile(r"[*_`]")
 _PAREN_NEG_RE = re.compile(r"\(\s*([\d,]+(?:\.\d+)?)\s*\)")
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Normalisation helpers
+# ──────────────────────────────────────────────────────────────────────────────
 
 def normalize_answer(text: Any) -> str:
-    """Strips markdown, currency symbols, commas; converts (1,034) -> -1034."""
+    """Strip markdown, currency symbols, commas; convert (1,034) → -1034."""
     text = str(text) if text is not None else ""
     text = _MD_RE.sub("", text)
     text = _PAREN_NEG_RE.sub(lambda m: f"-{m.group(1)}", text)
@@ -30,7 +46,7 @@ def normalize_answer(text: Any) -> str:
 
 
 def extract_numbers(text: Any) -> List[float]:
-    """Extracts floating point values from normalized answer text."""
+    """Return all floats found in the normalized answer."""
     normalized = normalize_answer(text)
     values = []
     for match in re.findall(r"-?\d+(?:\.\d+)?", normalized):
@@ -41,47 +57,131 @@ def extract_numbers(text: Any) -> List[float]:
     return values
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Tier 1 – Fast numeric comparison (no LLM)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# FinanceBench reports magnitudes in a variety of units (millions, billions,
+# thousands).  Allow up to 0.6 % relative error so that rounding differences
+# like 8738 M ≈ 8.7 B (exact = 8.738 B, rounded to 8.7 → 0.4 % error) pass.
+_REL_TOL = 0.006   # 0.6 %
+_ABS_TOL = 0.01    # for values near zero
+
+
+def _numbers_match(pred_nums: List[float], gt_nums: List[float]) -> bool:
+    """True when any pred number is within tolerance of any GT number."""
+    for p in pred_nums:
+        for g in gt_nums:
+            denom = max(abs(g), abs(p), 1e-9)
+            if abs(p - g) / denom <= _REL_TOL or abs(p - g) <= _ABS_TOL:
+                return True
+            # Sign-agnostic (CapEx outflow shown as positive in GT, negative in filing)
+            if abs(abs(p) - abs(g)) / max(abs(g), abs(p), 1e-9) <= _REL_TOL:
+                return True
+    return False
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Tier 2 – LLM semantic judge
+# ──────────────────────────────────────────────────────────────────────────────
+
 _NEGATION_RE = re.compile(
-    r"\b(no|none|not|never|zero|did not|did not make|no acquisitions?|no major)\b",
-    re.IGNORECASE,
+    r"\b(no|none|not|never|zero|did not|no acquisitions?|no major)\b", re.IGNORECASE
 )
+_INCREASE_RE = re.compile(r"\b(increas|grew|growth|higher|rose|improv)\w*", re.IGNORECASE)
+_DECREASE_RE = re.compile(r"\b(decreas|declin|fell|lower|drop|reduc|worsen)\w*", re.IGNORECASE)
+_STOP_WORDS  = {"the","a","an","and","or","of","in","to","is","was","it","that",
+                "this","for","on","at","by","with","yes","no","there","were",
+                "has","have","been","be","from","its","their","which","are"}
+
+_JUDGE_SYSTEM = """\
+You are a financial answer evaluator. Given a PREDICTED answer and a \
+GROUND-TRUTH answer, reply with JSON {"match": true/false} only.
+Match = true when they convey the same financial fact, even if worded differently:
+- Same number in different units (8738M = 8.7B), same direction (decreased/fell/declined),
+  same yes/no conclusion, same key event with different phrasing, negation equivalence.
+Match = false when they disagree on direction, name a different event, or give
+materially different numbers that unit conversion cannot explain."""
 
 
-def _both_negative(pred: str, gt: str) -> bool:
-    """True when both predicted and ground-truth express the same 'none/no X' idea."""
-    return bool(_NEGATION_RE.search(pred)) and bool(_NEGATION_RE.search(gt))
+def _fast_text_match(pred: str, gt: str) -> bool | None:
+    """
+    Rule-based fast path. Returns True/False if confident, None if uncertain
+    (caller should fall through to LLM).
+    """
+    pred_n, gt_n = normalize_answer(pred), normalize_answer(gt)
+    if not pred_n or not gt_n:
+        return False
+    # Exact / substring
+    if gt_n in pred_n or pred_n in gt_n:
+        return True
+    # Both negative / no-X
+    if bool(_NEGATION_RE.search(pred)) and bool(_NEGATION_RE.search(gt)):
+        return True
+    # Both directional and same direction
+    pred_inc, pred_dec = bool(_INCREASE_RE.search(pred)), bool(_DECREASE_RE.search(pred))
+    gt_inc,   gt_dec   = bool(_INCREASE_RE.search(gt)),   bool(_DECREASE_RE.search(gt))
+    if pred_inc and gt_inc and not pred_dec and not gt_dec:
+        return True
+    if pred_dec and gt_dec and not pred_inc and not gt_inc:
+        return True
+    # Opposite direction → definitely wrong
+    if (pred_inc and gt_dec) or (pred_dec and gt_inc):
+        return False
+    # Ambiguous → defer to LLM
+    return None
 
+
+def _llm_semantic_match(predicted: str, ground_truth: str) -> bool:
+    """
+    LLM judge for ambiguous cases. Uses the VERIFY model (same provider as
+    the QA pipeline's verify pass) so it works regardless of whether the
+    draft provider (Gemini) is available.
+    Returns False on any error so the scorer degrades gracefully.
+    """
+    try:
+        from backend.llm_client import call_llm_json
+        from backend.config import VERIFY_MODEL, VERIFY_PROVIDER
+
+        result = call_llm_json(
+            _JUDGE_SYSTEM,
+            f"Predicted: {predicted}\nGround truth: {ground_truth}",
+            VERIFY_MODEL,
+            provider=VERIFY_PROVIDER,
+        )
+        return bool(result.get("match", False))
+    except Exception:
+        return False
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Public API
+# ──────────────────────────────────────────────────────────────────────────────
 
 def answers_match(predicted: str, ground_truth: str) -> bool:
     """
-    Numeric equality (|pred-gt| < 0.01) if both are numeric, else substring
-    match. Falls back to comparing absolute values: FinanceBench-style
-    ground truth commonly reports an outflow line item (CapEx, dividends
-    paid, share buybacks) as a positive magnitude -- "capital expenditure
-    was $1,577M" -- while the filing itself shows it parenthesized/negative
-    in the cash flow statement, exactly as accounting convention requires.
-    A sign mismatch alone, with the magnitude otherwise correct, should not
-    fail an answer; the two-pass answerer is expected to phrase the sign to
-    match the question, but the scorer stays robust either way.
+    Two-tier answer comparison:
+      1. Numeric fast-path — deterministic, handles units and sign conventions.
+      2. LLM semantic judge — handles paraphrasing, directionality, entities.
     """
+    # ── Tier 1: numeric ──────────────────────────────────────────────────────
     pred_nums = extract_numbers(predicted)
-    gt_nums = extract_numbers(ground_truth)
+    gt_nums   = extract_numbers(ground_truth)
 
+    # Only use numeric comparison when BOTH sides have numbers; otherwise
+    # a year like "2023" in the question text creates spurious matches.
     if pred_nums and gt_nums:
-        if any(abs(p - g) < 0.01 for p in pred_nums for g in gt_nums):
-            return True
-        return any(abs(abs(p) - abs(g)) < 0.01 for p in pred_nums for g in gt_nums)
+        # Filter out obvious year-like numbers (1900–2100) if BOTH sides only
+        # contain years — those are context, not the answer value.
+        non_year = lambda nums: [n for n in nums if not (1900 <= n <= 2100)]
+        p_vals = non_year(pred_nums)
+        g_vals = non_year(gt_nums)
+        if p_vals and g_vals:
+            return _numbers_match(p_vals, g_vals)
+        # If both sides are year-only numbers, fall through to LLM
 
-    pred_norm = normalize_answer(predicted)
-    gt_norm = normalize_answer(ground_truth)
-    if not pred_norm or not gt_norm:
-        return False
-    if gt_norm in pred_norm or pred_norm in gt_norm:
-        return True
-    # "None" / "No acquisitions" / "did not make any" are all equivalent
-    if _both_negative(predicted, ground_truth):
-        return True
-    return False
+    # ── Tier 2: LLM semantic judge ───────────────────────────────────────────
+    return _llm_semantic_match(predicted, ground_truth)
 
 
 def page_matches(

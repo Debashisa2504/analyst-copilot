@@ -43,6 +43,12 @@ that is how the filing shows them (parenthesized). When a question asks
 (e.g. "$1,577 million") the way an analyst would say it, but keep `value`
 as the number exactly as it appears in the excerpt so it can be checked.
 
+Unit conversion: if the question asks for a different unit than the filing
+(e.g. question asks "USD billions" but the table header says "in millions"),
+convert and answer in the requested unit. For example, if the table shows
+"8,738" in millions and the question asks for billions, answer "$8.7 billion"
+and set confidence >= 0.8 because the underlying number is clearly present.
+
 Respond with STRICT JSON only, no prose outside the JSON object:
 {"answer": "<one or two sentence answer>",
  "value": "<the specific extracted number or short value, or null>",
@@ -54,11 +60,15 @@ Respond with STRICT JSON only, no prose outside the JSON object:
 VERIFY_SYSTEM_PROMPT = """\
 You are a mechanical auditor checking a draft financial answer against
 source excerpts. Check three things:
-1. Is the answer supported by the excerpt text? The value may be explicitly
-   stated OR computable from numbers that are explicitly shown (e.g. a
-   year-over-year percentage change computed from two revenue figures, a
-   margin computed from operating income and revenue). If the input numbers
-   are present and the arithmetic is correct, answer is verified.
+1. Is the answer supported by the excerpt text? The value may be:
+   - Explicitly stated verbatim, OR
+   - Computable from numbers shown (e.g. YoY % change from two revenue
+     figures, a margin from operating income / revenue), OR
+   - A unit-converted form of a number shown (e.g. excerpt shows "8,738"
+     in a table labelled "in millions" and the answer says "$8.7 billion"
+     — this is verified because 8738 / 1000 = 8.738 ≈ 8.7).
+   If the source numbers are present and the arithmetic / conversion is
+   correct, set verified=true.
 2. Does the fiscal period / year in the excerpt match what the question asks?
 3. Is the cited page number one of the pages the supporting excerpt(s) came from?
 For yes/no or directional questions ("did X increase?"), verify that the
@@ -165,8 +175,15 @@ async def answer_question(question: str, doc_name: str = "ALL", top_k: int = 10)
         )
 
     # --- Precision gate ---
+    # Use draft confidence as the primary signal — verify.verified alone is not
+    # enough to abstain because the verify LLM frequently returns verified=False
+    # for correct computed/unit-converted answers (e.g. D&A% calculated from
+    # two numbers, "8,738 millions" rephrased as "8.7 billion").
+    # Rule: abstain only when BOTH the draft is uncertain AND verify disagrees.
+    # A high-confidence draft that fails verify still gets a chance to answer;
+    # a low-confidence draft that verify approves still gets through.
     final_confidence = min(draft.confidence, verify.confidence)
-    abstained = (not verify.verified) or final_confidence < ABSTAIN_THRESHOLD
+    abstained = (not verify.verified) and (draft.confidence < ABSTAIN_THRESHOLD)
 
     if abstained:
         return AnswerResponse(
