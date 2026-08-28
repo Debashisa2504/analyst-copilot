@@ -99,6 +99,7 @@ class DraftAnswer(BaseModel):
     page_num: Optional[int] = None
     confidence: float = 0.0
     rationale: Optional[str] = None
+    found: bool = True  # LLM declares False when excerpts lack the needed data
 
     @field_validator("value", "answer", mode="before")
     @classmethod
@@ -106,6 +107,13 @@ class DraftAnswer(BaseModel):
         if v is None:
             return v
         return str(v)
+
+    @field_validator("page_num", mode="before")
+    @classmethod
+    def coerce_page_num(cls, v):
+        if isinstance(v, list):
+            return int(v[0]) if v else None
+        return v
 
 
 class VerifyResult(BaseModel):
@@ -121,6 +129,13 @@ class VerifyResult(BaseModel):
         if v is None:
             return v
         return str(v)
+
+    @field_validator("correct_page", mode="before")
+    @classmethod
+    def coerce_correct_page(cls, v):
+        if isinstance(v, list):
+            return int(v[0]) if v else None
+        return v
 
 
 class AnswerResponse(BaseModel):

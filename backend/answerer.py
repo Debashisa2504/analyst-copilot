@@ -54,7 +54,8 @@ Respond with STRICT JSON only, no prose outside the JSON object:
  "value": "<the specific extracted number or short value, or null>",
  "page_num": <int page number the value came from, or null>,
  "confidence": <float 0-1>,
- "rationale": "<short justification citing which excerpt was used>"}
+ "rationale": "<short justification citing which excerpt was used>",
+ "found": <true if the excerpts contain enough information to answer the question, false if the needed data is not present in the provided context>}
 """
 
 VERIFY_SYSTEM_PROMPT = """\
@@ -175,15 +176,14 @@ async def answer_question(question: str, doc_name: str = "ALL", top_k: int = 10)
         )
 
     # --- Precision gate ---
-    # Use draft confidence as the primary signal — verify.verified alone is not
-    # enough to abstain because the verify LLM frequently returns verified=False
-    # for correct computed/unit-converted answers (e.g. D&A% calculated from
-    # two numbers, "8,738 millions" rephrased as "8.7 billion").
-    # Rule: abstain only when BOTH the draft is uncertain AND verify disagrees.
-    # A high-confidence draft that fails verify still gets a chance to answer;
-    # a low-confidence draft that verify approves still gets through.
+    # Two conditions trigger abstention (OR logic):
+    #  (a) LLM itself declares found=False AND verify can't confirm → data genuinely absent
+    #  (b) verify disagrees AND draft is uncertain (below threshold) → low-confidence wrong answer
+    # This is semantic: the LLM reports whether it found the data (found field),
+    # no keyword matching on the answer text.
     final_confidence = min(draft.confidence, verify.confidence)
-    abstained = (not verify.verified) and (draft.confidence < ABSTAIN_THRESHOLD)
+    abstained = (not draft.found and not verify.verified) or \
+                (not verify.verified and draft.confidence < ABSTAIN_THRESHOLD)
 
     if abstained:
         return AnswerResponse(
