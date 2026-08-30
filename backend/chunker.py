@@ -217,7 +217,12 @@ def chunk_segments(segments: List[Segment], doc_name: str) -> List[Chunk]:
 
     for seg in segments:
         if seg.segment_type == ChunkType.TABLE_ROW:
-            prose.flush()
+            # Prose and table are independent accumulators — prose must NOT be
+            # flushed on every TABLE_ROW. SEC filings heavily interleave prose
+            # and table rows; flushing here causes each prose segment between
+            # two tables to become its own tiny chunk instead of being merged
+            # with its neighbours. Prose only flushes when it overflows, on a
+            # FOOTNOTE boundary, or at end-of-document.
             table.add(seg)
             continue
 
