@@ -21,11 +21,25 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FILINGS_DIR = PROJECT_ROOT / "filings"
 DATA_DIR = PROJECT_ROOT / "data"
 CHROMA_DIR = DATA_DIR / "chroma"
-BM25_DIR = DATA_DIR / "bm25"
 EVAL_LOG_DIR = DATA_DIR / "eval_logs"
+
+# --------------------------------------------------------------------------
+# Corpus selection — lets an experimental re-chunking (e.g. Plan A's
+# section-aware grouping) be ingested into its own PostgreSQL table + BM25
+# directory, completely isolated from the production "chunks" table / data/bm25
+# so the two can be A/B compared (or the experiment rolled back) without ever
+# touching the original index. Leave both unset to use the production corpus.
+# Example (PowerShell):
+#   $env:CHUNKS_TABLE = "chunks_plan_a"; $env:BM25_DIR_NAME = "bm25_plan_a"
+#   python -m backend.ingest --all
+CHUNKS_TABLE = os.getenv("CHUNKS_TABLE", "chunks")
+BM25_DIR = DATA_DIR / os.getenv("BM25_DIR_NAME", "bm25")
 
 for d in (FILINGS_DIR, DATA_DIR, CHROMA_DIR, BM25_DIR, EVAL_LOG_DIR):
     d.mkdir(parents=True, exist_ok=True)
+
+if CHUNKS_TABLE != "chunks":
+    print(f"[config] Using NON-default chunks table: '{CHUNKS_TABLE}' (BM25 dir: {BM25_DIR})")
 
 # --------------------------------------------------------------------------
 # LLM provider configuration
@@ -80,6 +94,9 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 # --------------------------------------------------------------------------
 CHUNK_SIZE_WORDS = int(os.getenv("CHUNK_SIZE_WORDS", 400))
 CHUNK_OVERLAP_WORDS = int(os.getenv("CHUNK_OVERLAP_WORDS", 50))
+# Section-aware table grouping (Plan A): same-section TABLE_ROW segments are
+# accumulated into one chunk until this word budget is hit.
+TABLE_CHUNK_SIZE_WORDS = int(os.getenv("TABLE_CHUNK_SIZE_WORDS", 800))
 
 # --------------------------------------------------------------------------
 # Retrieval
@@ -88,6 +105,7 @@ RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", 10))
 CONTEXT_TOP_K = int(os.getenv("CONTEXT_TOP_K", 8))          # excerpts sent to the LLM
 RRF_K = int(os.getenv("RRF_K", 60))                          # RRF damping constant
 DUAL_AGREEMENT_MULTIPLIER = float(os.getenv("DUAL_AGREEMENT_MULTIPLIER", 1.5))
+BM25_CALC_BIAS = float(os.getenv("BM25_CALC_BIAS", 2.0))     # BM25 weight boost for calculation queries
 
 # --------------------------------------------------------------------------
 # Precision gate

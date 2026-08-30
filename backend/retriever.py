@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 from typing import Dict, List, Optional
 
-from .config import CONTEXT_TOP_K, DUAL_AGREEMENT_MULTIPLIER, RETRIEVAL_TOP_K, RRF_K
+from .config import BM25_CALC_BIAS, CONTEXT_TOP_K, DUAL_AGREEMENT_MULTIPLIER, RETRIEVAL_TOP_K, RRF_K
 from .indexer import query_bm25, query_dense, list_indexed_filings
 from .models import Chunk, ChunkType, PageNumMethod, RetrievalResult, RetrievedChunk
 from .cache import lookup_metric, COMMON_METRICS
@@ -51,6 +51,14 @@ FINANCIAL_SYNONYMS: Dict[str, str] = {
     "ebitda": "operating income depreciation amortization EBITDA",
 }
 
+# Queries about these topics need a whole financial statement (multiple rows),
+# so BM25's exact-term matching against section-labeled table chunks (Plan A)
+# is boosted relative to dense semantic search for these.
+CALCULATION_QUERY_WORDS = [
+    "ebitda", "d&a margin", "d&a %", "capex", "operating margin",
+    "depreciation and amortization", "cash flow statement", "income statement",
+]
+
 # Map simple query keywords to cache metric keys
 _METRIC_KEY_MAP = {
     "revenue": "revenue", "net sales": "revenue", "total revenue": "revenue",
@@ -72,6 +80,13 @@ def expand_query(query: str) -> str:
     extras.extend(repair)
 
     return f"{query} {' '.join(extras)}" if extras else query
+
+
+def _is_calculation_query(query: str) -> bool:
+    """True for questions that need a full financial-statement section
+    (EBITDA, margins, capex, ...) rather than a single cached value."""
+    q = query.lower()
+    return any(w in q for w in CALCULATION_QUERY_WORDS)
 
 
 def _try_cache_fast_path(question: str, doc_name: str) -> Optional[RetrievalResult]:
@@ -132,12 +147,14 @@ def _to_chunk(hit: dict) -> Chunk:
         chunk_type=ChunkType(meta.get("chunk_type", "prose")),
         text=hit["text"],
         units=meta.get("units") or None,
+        section_type=meta.get("section_type") or "other",
     )
 
 
 async def _hybrid_retrieve(query: str, doc_name: str, top_k: int) -> RetrievalResult:
     """Core hybrid RRF retrieval for a single doc_name scope."""
     expanded = expand_query(query)
+    is_calc = _is_calculation_query(query)
 
     dense_hits = await query_dense(query, doc_name, top_k=top_k)   # semantic: unexpanded, async
     bm25_hits = query_bm25(expanded, doc_name, top_k=top_k)         # keyword: expanded, sync
@@ -159,7 +176,8 @@ async def _hybrid_retrieve(query: str, doc_name: str, top_k: int) -> RetrievalRe
         if d_rank is not None:
             rrf += 1.0 / (RRF_K + d_rank + 1)
         if b_rank is not None:
-            rrf += 1.0 / (RRF_K + b_rank + 1)
+            bm25_weight = BM25_CALC_BIAS if is_calc else 1.0
+            rrf += bm25_weight / (RRF_K + b_rank + 1)
 
         dual = d_rank is not None and b_rank is not None
         base_score = rrf * DUAL_AGREEMENT_MULTIPLIER if dual else rrf

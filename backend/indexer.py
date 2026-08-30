@@ -22,9 +22,9 @@ from rank_bm25 import BM25Okapi
 
 from .config import (
     AZURE_EMBEDDING_DEPLOYMENT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_API_VERSION,
-    AZURE_OPENAI_ENDPOINT, BM25_DIR, EMBEDDING_MODEL, EMBEDDING_PROVIDER,
+    AZURE_OPENAI_ENDPOINT, BM25_DIR, CHUNKS_TABLE, EMBEDDING_MODEL, EMBEDDING_PROVIDER,
 )
-from .db import get_sync_conn, get_async_conn
+from .db import get_sync_conn, get_async_conn, validate_table_name
 from .models import Chunk
 
 # Azure OpenAI embedding batch size.
@@ -34,10 +34,13 @@ _AZURE_EMBED_BATCH = 512
 # PostgreSQL upsert batch size
 _PG_BATCH = 500
 
-_UPSERT_SQL = """
-    INSERT INTO chunks
-        (chunk_id, doc_name, page_num, page_num_method, chunk_type, units, text, embedding)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+
+def _upsert_sql(table: str) -> str:
+    table = validate_table_name(table)
+    return f"""
+    INSERT INTO {table}
+        (chunk_id, doc_name, page_num, page_num_method, chunk_type, units, section_type, text, embedding)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT (chunk_id) DO UPDATE SET
         text      = EXCLUDED.text,
         embedding = EXCLUDED.embedding
@@ -95,10 +98,14 @@ def _embed_azure(texts: List[str]) -> List[List[float]]:
 # Dense index — PostgreSQL + pgvector
 # ---------------------------------------------------------------------------
 
-def index_chunks(chunks: List[Chunk], doc_name: str) -> None:
+def index_chunks(chunks: List[Chunk], doc_name: str, table: str = CHUNKS_TABLE) -> None:
     """
     Upserts chunks into PostgreSQL (dense) and rebuilds the per-filing BM25 pickle (sparse).
     Synchronous — called from the ingest CLI and the /upload endpoint.
+
+    `table` defaults to config.CHUNKS_TABLE, so pointing CHUNKS_TABLE at an
+    alternate table (e.g. "chunks_plan_a") redirects every caller here without
+    touching call sites.
     """
     if not chunks:
         return
@@ -115,16 +122,18 @@ def index_chunks(chunks: List[Chunk], doc_name: str) -> None:
             c.page_num_method.value,
             c.chunk_type.value,
             c.units or None,
+            c.section_type or "other",
             c.text,
             HalfVector(embeddings[i]),
         )
         for i, c in enumerate(chunks)
     ]
 
+    upsert_sql = _upsert_sql(table)
     with get_sync_conn() as conn:
         with conn.cursor() as cur:
             for start in range(0, len(rows), _PG_BATCH):
-                cur.executemany(_UPSERT_SQL, rows[start : start + _PG_BATCH])
+                cur.executemany(upsert_sql, rows[start : start + _PG_BATCH])
         conn.commit()
 
     # ---- Sparse (BM25) ----
@@ -134,25 +143,30 @@ def index_chunks(chunks: List[Chunk], doc_name: str) -> None:
         pickle.dump({"bm25": bm25, "chunks": chunks}, f)
 
 
-async def query_dense(query: str, doc_name: str, top_k: int = 10) -> List[Dict[str, Any]]:
+async def query_dense(
+    query: str, doc_name: str, top_k: int = 10, table: str = CHUNKS_TABLE
+) -> List[Dict[str, Any]]:
     """
     Async cosine-similarity vector search against PostgreSQL, optionally scoped to one filing.
     The <=> operator is pgvector's cosine distance (0 = identical, 2 = opposite).
+
+    `table` defaults to config.CHUNKS_TABLE (see index_chunks docstring).
     """
     vec = HalfVector(_embed_texts([query])[0])
+    table = validate_table_name(table)
 
     if doc_name == "ALL":
         sql = (
-            "SELECT chunk_id, text, doc_name, page_num, page_num_method, chunk_type, units, "
-            "embedding <=> %s AS distance "
-            "FROM chunks ORDER BY distance LIMIT %s"
+            "SELECT chunk_id, text, doc_name, page_num, page_num_method, chunk_type, units, section_type, "
+            f"embedding <=> %s AS distance "
+            f"FROM {table} ORDER BY distance LIMIT %s"
         )
         params = (vec, top_k)
     else:
         sql = (
-            "SELECT chunk_id, text, doc_name, page_num, page_num_method, chunk_type, units, "
-            "embedding <=> %s AS distance "
-            "FROM chunks WHERE doc_name = %s ORDER BY distance LIMIT %s"
+            "SELECT chunk_id, text, doc_name, page_num, page_num_method, chunk_type, units, section_type, "
+            f"embedding <=> %s AS distance "
+            f"FROM {table} WHERE doc_name = %s ORDER BY distance LIMIT %s"
         )
         params = (vec, doc_name, top_k)
 
@@ -162,7 +176,7 @@ async def query_dense(query: str, doc_name: str, top_k: int = 10) -> List[Dict[s
             rows = await cur.fetchall()
 
     hits = []
-    for chunk_id, text, doc, page, method, ctype, units, distance in rows:
+    for chunk_id, text, doc, page, method, ctype, units, section_type, distance in rows:
         hits.append({
             "chunk_id": chunk_id,
             "text": text,
@@ -172,6 +186,7 @@ async def query_dense(query: str, doc_name: str, top_k: int = 10) -> List[Dict[s
                 "page_num_method": method or "unknown",
                 "chunk_type": ctype or "prose",
                 "units": units or "",
+                "section_type": section_type or "other",
             },
             "distance": float(distance),
         })
@@ -226,6 +241,7 @@ def query_bm25(query: str, doc_name: str, top_k: int = 10) -> List[Dict[str, Any
                     "page_num_method": chunk.page_num_method.value,
                     "chunk_type": chunk.chunk_type.value,
                     "units": chunk.units or "",
+                    "section_type": chunk.section_type or "other",
                 },
                 "score": float(score),
             })

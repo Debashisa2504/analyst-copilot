@@ -39,6 +39,38 @@ _ACCOUNTING_NUMBER_RE = re.compile(
 )
 _NUMERIC_RE = re.compile(r"^-?\$?\s*\(?\s*[\d,]+(?:\.\d+)?\s*\)?%?$")
 
+# --------------------------------------------------------------------------
+# Section detection (Plan A: section-aware table chunking)
+# --------------------------------------------------------------------------
+SECTION_KEYWORDS = {
+    "income_statement": [
+        "statements of operations", "statements of income", "statements of earnings",
+        "consolidated statements of income",
+    ],
+    "cash_flow": [
+        "statements of cash flows", "cash flow statement",
+        "consolidated statements of cash flows",
+    ],
+    "balance_sheet": [
+        "balance sheet", "statements of financial position",
+        "consolidated balance sheets",
+    ],
+}
+
+# Headings run a few words to a short line; a long paragraph that happens to
+# contain one of the phrases above (e.g. an MD&A cross-reference) shouldn't
+# flip the active section, so only short text is classified.
+_HEADING_TEXT_MAX_CHARS = 200
+
+
+def _classify_section(heading_text: str) -> str:
+    """Maps a heading/short-paragraph's text to a financial-statement section."""
+    t = heading_text.lower()
+    for stype, keywords in SECTION_KEYWORDS.items():
+        if any(kw in t for kw in keywords):
+            return stype
+    return "other"
+
 
 # --------------------------------------------------------------------------
 # SGML unwrapper
@@ -324,6 +356,7 @@ def parse_filing(
     current_page = 1
     word_count = 0
     active_units: Optional[str] = None
+    active_section = "other"
     footnote_defs = link_footnotes(soup.get_text(" ", strip=True)[:200_000])
 
     body = soup.body or soup
@@ -389,6 +422,13 @@ def parse_filing(
             # Already removed as part of an earlier leaf-table's cleanup.
             continue
 
+        if element.name in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            heading_text = element.get_text(" ", strip=True)
+            section = _classify_section(heading_text)
+            if section != "other":
+                active_section = section
+            continue
+
         if element.name == "table":
             # SEC EDGAR HTML routinely wraps the *entire page* in an outer
             # <table> used purely for layout, with the real data tables
@@ -417,6 +457,7 @@ def parse_filing(
                         table_html=None,
                         units=active_units,
                         segment_type=ChunkType.TABLE_ROW,
+                        section_type=active_section,
                     )
                 )
             # Prevent descending into this leaf table's cells again as prose.
@@ -439,6 +480,11 @@ def parse_filing(
             text = element.get_text(" ", strip=True)
             if not text or len(text) < 2:
                 continue
+
+            if len(text) <= _HEADING_TEXT_MAX_CHARS:
+                section = _classify_section(text)
+                if section != "other":
+                    active_section = section
 
             maybe_page_units = extract_unit_header(text)
             if maybe_page_units:

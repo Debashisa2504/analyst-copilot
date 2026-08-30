@@ -1,4 +1,6 @@
+from backend.models import ChunkType
 from backend.parser import (
+    _classify_section,
     count_page_break_markers,
     extract_printed_page_number,
     extract_unit_header,
@@ -68,3 +70,31 @@ def test_parse_filing_integration():
     result = parse_filing(html, doc_name="TEST_10K")
     assert result.doc_name == "TEST_10K"
     assert len(result.segments) >= 1
+
+
+def test_classify_section():
+    assert _classify_section("Consolidated Statements of Income") == "income_statement"
+    assert _classify_section("Consolidated Statements of Cash Flows") == "cash_flow"
+    assert _classify_section("Consolidated Balance Sheets") == "balance_sheet"
+    assert _classify_section("Notes to Financial Statements") == "other"
+
+
+def test_parse_filing_tags_table_rows_with_section_type():
+    html = """
+    <html><body>
+      <h2>Consolidated Statements of Income</h2>
+      <table>
+        <tr><td>Header</td><td>2018</td></tr>
+        <tr><td>Revenue</td><td>100</td></tr>
+      </table>
+      <h2>Consolidated Statements of Cash Flows</h2>
+      <table>
+        <tr><td>Header</td><td>2018</td></tr>
+        <tr><td>Net cash from operations</td><td>50</td></tr>
+      </table>
+    </body></html>
+    """
+    result = parse_filing(html, doc_name="TEST_10K")
+    table_segs = [s for s in result.segments if s.segment_type == ChunkType.TABLE_ROW]
+    assert any(s.section_type == "income_statement" for s in table_segs)
+    assert any(s.section_type == "cash_flow" for s in table_segs)

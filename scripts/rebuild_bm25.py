@@ -35,7 +35,7 @@ from backend.models import Chunk, ChunkType, PageNumMethod
 
 
 _FETCH_SQL = """
-    SELECT chunk_id, doc_name, page_num, page_num_method, chunk_type, units, text
+    SELECT chunk_id, doc_name, page_num, page_num_method, chunk_type, units, section_type, text
     FROM chunks
     {where}
     ORDER BY doc_name, chunk_id
@@ -52,7 +52,7 @@ def _fetch_chunks(doc_name: str | None = None) -> dict[str, list[Chunk]]:
         with conn.cursor() as cur:
             cur.execute(sql)
             for row in cur.fetchall():
-                chunk_id, doc, page, method, ctype, units, text = row
+                chunk_id, doc, page, method, ctype, units, section_type, text = row
                 chunk = Chunk(
                     chunk_id=chunk_id,
                     doc_name=doc,
@@ -60,6 +60,7 @@ def _fetch_chunks(doc_name: str | None = None) -> dict[str, list[Chunk]]:
                     page_num_method=PageNumMethod(method or "unknown"),
                     chunk_type=ChunkType(ctype or "prose"),
                     units=units or None,
+                    section_type=section_type or "other",
                     text=text,
                 )
                 by_doc[doc].append(chunk)

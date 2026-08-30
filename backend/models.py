@@ -39,6 +39,7 @@ class Segment(BaseModel):
     footnote_id: Optional[str] = None
     units: Optional[str] = None
     segment_type: ChunkType = ChunkType.PROSE
+    section_type: str = "other"   # 'income_statement' | 'cash_flow' | 'balance_sheet' | 'other'
 
 
 class ParsedFiling(BaseModel):
@@ -60,6 +61,7 @@ class Chunk(BaseModel):
     chunk_type: ChunkType = ChunkType.PROSE
     text: str
     units: Optional[str] = None
+    section_type: str = "other"   # 'income_statement' | 'cash_flow' | 'balance_sheet' | 'other'
 
 
 class RetrievedChunk(BaseModel):
