@@ -52,6 +52,29 @@ CREATE INDEX IF NOT EXISTS {table}_doc_idx
     ON {table} (doc_name);
 """
 
+_FACTS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS financial_facts (
+    id              BIGSERIAL PRIMARY KEY,
+    doc_name        TEXT NOT NULL,
+    company         TEXT NOT NULL,
+    fiscal_year     INTEGER NOT NULL,
+    fiscal_quarter  INTEGER,
+    period_type     TEXT NOT NULL,
+    filing_type     TEXT NOT NULL,
+    statement_type  TEXT NOT NULL,
+    row_label       TEXT NOT NULL,
+    column_header   TEXT,
+    value_numeric   NUMERIC,
+    value_text      TEXT NOT NULL,
+    units           TEXT,
+    page_num        INTEGER
+);
+CREATE INDEX IF NOT EXISTS ff_lookup ON financial_facts (company, fiscal_year, statement_type);
+CREATE INDEX IF NOT EXISTS ff_doc    ON financial_facts (doc_name, statement_type);
+CREATE INDEX IF NOT EXISTS ff_label  ON financial_facts
+    USING GIN (to_tsvector('english', row_label));
+"""
+
 
 def get_sync_conn() -> psycopg.Connection:
     """Open a synchronous psycopg3 connection with pgvector adapter registered."""
@@ -69,13 +92,16 @@ async def get_async_conn() -> psycopg.AsyncConnection:
 
 def setup_schema(table: str = CHUNKS_TABLE) -> None:
     """
-    Creates the pgvector extension and the chunks table (named `table`,
-    defaulting to config.CHUNKS_TABLE) if they don't exist.
-    Safe to call multiple times (all statements use IF NOT EXISTS).
+    Creates the pgvector extension, the chunks table (named `table`,
+    defaulting to config.CHUNKS_TABLE), and the financial_facts table if
+    they don't exist. Safe to call multiple times (all statements use
+    IF NOT EXISTS).
 
     Pass an alternate table name (e.g. "chunks_plan_a") to stand up a second,
     fully isolated corpus alongside the production "chunks" table -- useful
     for A/B comparing a re-chunking strategy without touching the original.
+    financial_facts is always the same fixed table regardless of `table`,
+    since it isn't part of that experiment.
 
     NOTE: CREATE EXTENSION vector requires the extension to be allow-listed in
     Azure Portal → your PG server → Server parameters → azure.extensions → add 'vector'.
@@ -87,6 +113,7 @@ def setup_schema(table: str = CHUNKS_TABLE) -> None:
     with psycopg.connect(DATABASE_URL) as conn:
         register_vector(conn)
         conn.execute(_schema_sql(table))
+        conn.execute(_FACTS_SCHEMA_SQL)
         conn.commit()
 
-    print(f"[db] Schema ready (pgvector extension + '{table}' table).")
+    print(f"[db] Schema ready (pgvector extension + '{table}' + financial_facts tables).")
