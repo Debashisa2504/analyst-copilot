@@ -19,6 +19,11 @@ from bs4 import BeautifulSoup, Tag
 
 from .config import MIN_PAGE_BREAK_MARKERS, WORDS_PER_PAGE_FALLBACK
 from .models import ParsedFiling, PageNumMethod, Segment, ChunkType
+from .statement_utils import (
+    STATEMENT_KEYWORDS as SECTION_KEYWORDS,
+    detect_statement_type as _classify_section,
+    text_is_statement_heading as _classify_section_strict,
+)
 
 # --------------------------------------------------------------------------
 # Regexes
@@ -42,35 +47,15 @@ _NUMERIC_RE = re.compile(r"^-?\$?\s*\(?\s*[\d,]+(?:\.\d+)?\s*\)?%?$")
 # --------------------------------------------------------------------------
 # Section detection (Plan A: section-aware table chunking)
 # --------------------------------------------------------------------------
-SECTION_KEYWORDS = {
-    "income_statement": [
-        "statements of operations", "statements of income", "statements of earnings",
-        "consolidated statements of income",
-    ],
-    "cash_flow": [
-        "statements of cash flows", "cash flow statement",
-        "consolidated statements of cash flows",
-    ],
-    "balance_sheet": [
-        "balance sheet", "statements of financial position",
-        "consolidated balance sheets",
-    ],
-}
+# SECTION_KEYWORDS / _classify_section (broad match, for genuine heading
+# tags) / _classify_section_strict (starts-with match, for ambiguous short
+# prose) all come from backend/statement_utils.py, shared with
+# facts_indexer.py so the two systems never drift on section labels.
 
 # Headings run a few words to a short line; a long paragraph that happens to
 # contain one of the phrases above (e.g. an MD&A cross-reference) shouldn't
 # flip the active section, so only short text is classified.
 _HEADING_TEXT_MAX_CHARS = 200
-
-
-def _classify_section(heading_text: str) -> str:
-    """Maps a heading/short-paragraph's text to a financial-statement section."""
-    t = heading_text.lower()
-    for stype, keywords in SECTION_KEYWORDS.items():
-        if any(kw in t for kw in keywords):
-            return stype
-    return "other"
-
 
 # --------------------------------------------------------------------------
 # SGML unwrapper
@@ -519,7 +504,11 @@ def parse_filing(
                 continue
 
             if len(text) <= _HEADING_TEXT_MAX_CHARS:
-                section = _classify_section(text)
+                # Strict "starts with" match here (not the broad h-tag match
+                # above): a bold <p> heading should flip the active section,
+                # but a narrative cross-reference like "See consolidated
+                # statement of cash flows." must not.
+                section = _classify_section_strict(text)
                 if section != "other":
                     active_section = section
 

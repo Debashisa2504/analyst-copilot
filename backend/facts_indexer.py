@@ -37,6 +37,11 @@ from .parser import (
     is_numeric_text,
     normalize_accounting_number,
 )
+from .statement_utils import (
+    STATEMENT_KEYWORDS,
+    detect_statement_type as _detect_statement_type,
+    text_is_statement_heading as _text_is_statement_heading,
+)
 
 # --------------------------------------------------------------------------
 # doc_name → metadata
@@ -79,61 +84,9 @@ def parse_doc_name(doc_name: str) -> dict:
 # --------------------------------------------------------------------------
 # Statement-type detection from surrounding heading text
 # --------------------------------------------------------------------------
-STATEMENT_KEYWORDS: Dict[str, List[str]] = {
-    "income_statement": [
-        "statements of operations",
-        "statement of operations",
-        "statements of income",
-        "statement of income",
-        "statements of earnings",
-        "statement of earnings",
-        "consolidated statements of income",
-        "consolidated statement of income",
-        "consolidated statements of operations",
-        "consolidated statement of operations",
-        "consolidated statements of earnings",
-        "consolidated statement of earnings",
-    ],
-    "cash_flow": [
-        "statements of cash flows",
-        "statement of cash flows",
-        "cash flow statement",
-        "consolidated statements of cash flows",
-        "consolidated statement of cash flows",
-    ],
-    "balance_sheet": [
-        "balance sheet",
-        "statements of financial position",
-        "statement of financial position",
-        "consolidated balance sheets",
-        "consolidated balance sheet",
-        "consolidated statements of financial position",
-        "consolidated statement of financial position",
-    ],
-}
-
-
-def _detect_statement_type(text: str) -> str:
-    """Broad match — used for table text scans (headings, captions, first rows)."""
-    lower = text.lower()
-    for stmt_type, keywords in STATEMENT_KEYWORDS.items():
-        if any(kw in lower for kw in keywords):
-            return stmt_type
-    return "other"
-
-
-def _text_is_statement_heading(text: str) -> str:
-    """
-    Strict match for prose elements — text must START WITH a keyword to qualify.
-    Avoids false-positives like 'See consolidated statement of cash flows.'
-    which is a cross-reference, not a heading.
-    """
-    lower = text.lower().strip()
-    for stmt_type, keywords in STATEMENT_KEYWORDS.items():
-        if any(lower == kw or lower.startswith(kw) for kw in keywords):
-            return stmt_type
-    return "other"
-
+# STATEMENT_KEYWORDS + the two matcher functions now live in
+# backend/statement_utils.py, shared with backend/parser.py so the two
+# systems never drift on what counts as each of the four section labels.
 
 # --------------------------------------------------------------------------
 # Structured table parsing (mirrors parse_table_to_facts but returns dicts)

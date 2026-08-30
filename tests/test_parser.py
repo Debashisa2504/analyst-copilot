@@ -79,6 +79,38 @@ def test_classify_section():
     assert _classify_section("Notes to Financial Statements") == "other"
 
 
+def test_classify_section_singular_forms():
+    # Singular headings (e.g. PEPSICO-style "Statement of Income" instead of
+    # "Statements of Income") must classify the same as their plural form.
+    assert _classify_section("Statement of Income") == "income_statement"
+    assert _classify_section("Consolidated Statement of Cash Flows") == "cash_flow"
+    assert _classify_section("Consolidated Statement of Financial Position") == "balance_sheet"
+
+
+def test_parse_filing_prose_heading_vs_cross_reference():
+    # A short paragraph that merely REFERENCES a statement ("See ... for
+    # detail") must not flip the active section -- only a paragraph that
+    # itself starts with the statement name (a real bold-text heading) should.
+    html = """
+    <html><body>
+      <p>See Consolidated Statement of Cash Flows for additional detail.</p>
+      <table>
+        <tr><td>Header</td><td>2018</td></tr>
+        <tr><td>Some other row</td><td>1</td></tr>
+      </table>
+      <p><b>Consolidated Statement of Income</b></p>
+      <table>
+        <tr><td>Header</td><td>2018</td></tr>
+        <tr><td>Revenue</td><td>100</td></tr>
+      </table>
+    </body></html>
+    """
+    result = parse_filing(html, doc_name="TEST_10K")
+    table_segs = [s for s in result.segments if s.segment_type == ChunkType.TABLE_ROW]
+    assert table_segs[0].section_type == "other"
+    assert any(s.section_type == "income_statement" for s in table_segs)
+
+
 def test_parse_filing_tags_table_rows_with_section_type():
     html = """
     <html><body>
