@@ -34,6 +34,29 @@ CREATE INDEX IF NOT EXISTS chunks_doc_idx
     ON chunks (doc_name);
 """
 
+_FACTS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS financial_facts (
+    id              BIGSERIAL PRIMARY KEY,
+    doc_name        TEXT NOT NULL,
+    company         TEXT NOT NULL,
+    fiscal_year     INTEGER NOT NULL,
+    fiscal_quarter  INTEGER,
+    period_type     TEXT NOT NULL,
+    filing_type     TEXT NOT NULL,
+    statement_type  TEXT NOT NULL,
+    row_label       TEXT NOT NULL,
+    column_header   TEXT,
+    value_numeric   NUMERIC,
+    value_text      TEXT NOT NULL,
+    units           TEXT,
+    page_num        INTEGER
+);
+CREATE INDEX IF NOT EXISTS ff_lookup ON financial_facts (company, fiscal_year, statement_type);
+CREATE INDEX IF NOT EXISTS ff_doc    ON financial_facts (doc_name, statement_type);
+CREATE INDEX IF NOT EXISTS ff_label  ON financial_facts
+    USING GIN (to_tsvector('english', row_label));
+"""
+
 
 def get_sync_conn() -> psycopg.Connection:
     """Open a synchronous psycopg3 connection with pgvector adapter registered."""
@@ -51,8 +74,8 @@ async def get_async_conn() -> psycopg.AsyncConnection:
 
 def setup_schema() -> None:
     """
-    Creates the pgvector extension and chunks table if they don't exist.
-    Safe to call multiple times (all statements use IF NOT EXISTS).
+    Creates the pgvector extension, chunks table, and financial_facts table
+    if they don't exist. Safe to call multiple times (all statements use IF NOT EXISTS).
 
     NOTE: CREATE EXTENSION vector requires the extension to be allow-listed in
     Azure Portal → your PG server → Server parameters → azure.extensions → add 'vector'.
@@ -64,6 +87,7 @@ def setup_schema() -> None:
     with psycopg.connect(DATABASE_URL) as conn:
         register_vector(conn)
         conn.execute(_SCHEMA_SQL)
+        conn.execute(_FACTS_SCHEMA_SQL)
         conn.commit()
 
-    print("[db] Schema ready (pgvector extension + chunks table).")
+    print("[db] Schema ready (pgvector extension + chunks + financial_facts tables).")

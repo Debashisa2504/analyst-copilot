@@ -45,20 +45,27 @@ _NUMERIC_RE = re.compile(r"^-?\$?\s*\(?\s*[\d,]+(?:\.\d+)?\s*\)?%?$")
 # --------------------------------------------------------------------------
 def _extract_html_from_sgml(raw: str) -> str:
     """
-    Some SEC EDGAR 8-K (and other form) downloads are delivered as
-    full-submission text files — an SGML wrapper that bundles the actual
-    HTML filing inside a raw <TEXT>...</TEXT> block, preceded by EDGAR
-    header metadata (ACCESSION-NUMBER, COMPANY-CONFORMED-NAME, etc.).
+    Some SEC EDGAR downloads are delivered as full-submission SGML text files
+    that bundle the actual HTML filing inside <TEXT>...</TEXT> blocks.
 
-    Uses plain str.find() rather than regex to avoid backtracking on
-    large (~140 KB) filing files.  Returns the largest embedded HTML
-    block found, or the original string unchanged if no wrapper is detected.
+    Handles three EDGAR packaging patterns:
+      1. Normal (10-K/10-Q): one large HTML block inside <TEXT> → return it.
+      2. Multi-doc (8-K + exhibits): multiple HTML blocks inside <TEXT>,
+         one of which may be an XBRL interactive-viewer template (report.css).
+         Filter the viewer out and concatenate the remaining content blocks.
+      3. iXBRL (modern 8-K): actual filing content is in inline-XBRL <html>
+         sections that appear OUTSIDE <TEXT> blocks in the SGML wrapper.
+         The only <TEXT> block is the viewer shell.  Fall back to scanning
+         the entire file for non-viewer <html> blocks.
+
+    Returns the original string unchanged if no SGML wrapper is detected.
     """
     lower = raw.lower()
     # Fast guard: both markers must be present for an SGML wrapper
     if "<text>" not in lower or "<html" not in lower:
         return raw
 
+    # --- Step 1: collect HTML blocks that live inside <TEXT>...</TEXT> ---
     html_blocks: List[str] = []
     pos = 0
     while True:
@@ -68,7 +75,6 @@ def _extract_html_from_sgml(raw: str) -> str:
         content_start = tag_pos + 6  # len("<text>")
         close_pos = lower.find("</text>", content_start)
         end = close_pos if close_pos != -1 else len(raw)
-        # Use the pre-lowercased slice to avoid repeated .lower() calls
         block_lower = lower[content_start:end].lstrip()
         if block_lower.startswith("<html"):
             skip = (end - content_start) - len(block_lower)
@@ -77,9 +83,40 @@ def _extract_html_from_sgml(raw: str) -> str:
             break
         pos = close_pos + 7  # len("</text>")
 
-    # Multiple <TEXT> blocks are common (main doc + exhibits + CSS).
-    # The largest block is the primary filing document.
-    return max(html_blocks, key=len) if html_blocks else raw
+    if not html_blocks:
+        return raw
+
+    # --- Step 2: filter XBRL interactive-viewer shells (report.css) ---
+    # These contain JS/CSS rendering infrastructure, not filing content.
+    _VIEWER = "report.css"
+    content_blocks = [b for b in html_blocks if _VIEWER not in b[:600].lower()]
+
+    if content_blocks:
+        # One real content block → return it (typical 10-K/10-Q).
+        # Multiple → 8-K with exhibit attachments; concatenate all.
+        return "\n".join(content_blocks) if len(content_blocks) > 1 else content_blocks[0]
+
+    # --- Step 3: all TEXT-block HTML was viewer shell (iXBRL pattern) ---
+    # The actual filing lives in <html xmlns=...> sections OUTSIDE <TEXT>
+    # blocks, embedded directly in the SGML outer wrapper.
+    ixbrl_blocks: List[str] = []
+    for m in re.finditer(r"<html[^>]*>", raw, re.IGNORECASE):
+        start = m.start()
+        end_tag = lower.find("</html>", start)
+        end = (end_tag + 7) if end_tag != -1 else len(raw)
+        block = raw[start:end]
+        snippet = block[:400].lower()
+        if "sec edgar submission" in snippet:   # outermost SGML wrapper
+            continue
+        if _VIEWER in snippet:                  # viewer shell
+            continue
+        ixbrl_blocks.append(block)
+
+    if ixbrl_blocks:
+        return "\n".join(ixbrl_blocks)
+
+    # Last resort: return the largest TEXT-block HTML (original behaviour).
+    return max(html_blocks, key=len)
 
 
 # --------------------------------------------------------------------------

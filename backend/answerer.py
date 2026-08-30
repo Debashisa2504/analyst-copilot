@@ -27,14 +27,19 @@ from .models import (
 )
 from .retriever import retrieve, top_context
 from .footnote_graph import enrich_context_with_footnotes
+from .facts_retriever import fetch_facts_for_question
 
 DRAFT_SYSTEM_PROMPT = """\
 You are a meticulous financial analyst assistant.
-You will be given excerpts from an SEC filing (facts serialized as
-"Row Label, Column Header: Value (Units)" for tables, plus prose passages
-and any resolved footnote definitions).
-Answer the user's question using ONLY the excerpts provided. If the
-excerpts do not contain enough information, say so honestly.
+You will be given data from an SEC filing in two sections:
+  [FINANCIAL STATEMENT DATA] — complete rows from the relevant financial
+    statements queried directly from a structured database. Use this for
+    all numeric calculations (EBITDA, margins, D&A %, YoY changes, etc.).
+  [RETRIEVED EXCERPTS] — top-k semantic search results for additional context.
+  If only [RETRIEVED EXCERPTS] is present (no structured data section), use
+  those excerpts as the sole source.
+Answer the user's question using ONLY the provided data. If the
+data does not contain enough information, say so honestly.
 
 Sign convention: cash flow statement outflows (e.g. capital expenditure,
 dividends paid, share repurchases) are stored as negative numbers because
@@ -146,7 +151,27 @@ async def answer_question(question: str, doc_name: str = "ALL", top_k: int = 10)
     # --- Footnote auto-enrichment (§6.1) ---
     footnote_addon = enrich_context_with_footnotes(context_chunks)
 
-    context_text = _format_context(context_chunks, footnote_addon)
+    # --- Structured financial facts (Plan B) ---
+    # For filing-scoped questions, prepend full statement rows from the
+    # financial_facts table so the LLM has ALL data for calculation questions
+    # (no top-k truncation). Falls back silently if facts not ingested yet.
+    facts_context: str = ""
+    if resolved_doc != "ALL":
+        try:
+            facts_context = fetch_facts_for_question(question, resolved_doc) or ""
+        except Exception:
+            facts_context = ""
+
+    chunk_text = _format_context(context_chunks, footnote_addon)
+    if facts_context:
+        context_text = (
+            "[FINANCIAL STATEMENT DATA — use for all calculations]\n"
+            f"{facts_context}\n\n"
+            "[RETRIEVED EXCERPTS — supporting narrative context]\n"
+            f"{chunk_text}"
+        )
+    else:
+        context_text = chunk_text
     evidence = [
         EvidenceItem(
             text=rc.chunk.text,

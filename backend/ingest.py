@@ -41,7 +41,7 @@ def ingest_file(path: Path) -> int:
     chunks = chunk_segments(parsed.segments, doc_name=doc_name)
     index_chunks(chunks, doc_name=doc_name)
     print(
-        f"[ingest] {doc_name}: {len(parsed.segments)} segments → {len(chunks)} chunks "
+        f"[ingest] {doc_name}: {len(parsed.segments)} segments -> {len(chunks)} chunks "
         f"(page method: {parsed.page_num_method.value}, offset: {parsed.page_offset})"
     )
     return len(chunks)
