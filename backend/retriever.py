@@ -4,15 +4,10 @@ backend/retriever.py
 Pre-retrieval financial query expansion + hybrid dense/BM25 fusion via
 Reciprocal Rank Fusion (ADR-002, ADR-005).
 
-Query pipeline (§4.2):
-  1. GAAP synonym expansion (BM25 side only — dense stays semantically clean)
-  2. Self-repair expansions from past rephrase events
-  3. Query classifier: simple | temporal | cross_company | complex
-  4. Routing:
-       simple       -> structured SQLite cache fast-path (<100ms, no RAG)
-       cross_company -> per-filing RAG via asyncio.gather (parallel)
-       temporal/complex -> hybrid RAG
-  5. Retrieval memory weights applied after RRF fusion
+Scope is always determined by the caller (user-selected filing(s)):
+  - Single filing  -> hybrid RAG scoped to that filing
+  - doc_name="ALL" -> fan out across all indexed filings in parallel
+  - simple query   -> SQLite cache fast-path first, fall back to hybrid RAG
 """
 from __future__ import annotations
 
@@ -22,9 +17,9 @@ from typing import Dict, List, Optional
 from .config import BM25_CALC_BIAS, CONTEXT_TOP_K, DUAL_AGREEMENT_MULTIPLIER, RETRIEVAL_TOP_K, RRF_K
 from .indexer import query_bm25, query_dense, list_indexed_filings
 from .models import Chunk, ChunkType, PageNumMethod, RetrievalResult, RetrievedChunk
-from .cache import lookup_metric, COMMON_METRICS
+from .cache import lookup_metric
 from .learning import get_chunk_weight
-from .learning.query_patterns import classify_query, find_similar_pattern
+from .learning.query_patterns import classify_query
 from .learning.self_repair import get_repair_expansions
 
 # GAAP synonym expansion dictionary (BM25-only; §3, ADR-005)
@@ -222,26 +217,27 @@ async def retrieve(
     query: str, doc_name: str = "ALL", top_k: int = RETRIEVAL_TOP_K
 ) -> RetrievalResult:
     """
-    Full async query pipeline:
-      1. Classify query type.
-      2. Route: simple → cache, cross_company → parallel RAG, else → hybrid RAG.
+    Hybrid retrieval scoped to exactly the filing(s) the user selected.
+    doc_name is always respected — the query classifier never overrides scope.
+
+    doc_name="ALL" means the user selected all indexed filings (or the eval
+    harness is running in global scope); otherwise it is a single filing stem.
     """
-    q_type = classify_query(query)
+    # Simple: try cache fast-path first (single-filing only)
+    if doc_name != "ALL":
+        q_type = classify_query(query)
+        if q_type == "simple":
+            cached = _try_cache_fast_path(query, doc_name)
+            if cached:
+                return cached
 
-    # Simple: try cache fast-path first
-    if q_type == "simple" and doc_name != "ALL":
-        cached = _try_cache_fast_path(query, doc_name)
-        if cached:
-            return cached
-
-    # Cross-company: query all filings concurrently (asyncio.gather) then merge
-    if q_type == "cross_company" or doc_name == "ALL":
+    # doc_name="ALL": fan out across every indexed filing in parallel
+    if doc_name == "ALL":
         filings = list_indexed_filings()
         if not filings:
             return RetrievalResult(query=query, expanded_query=query, chunks=[], agreement_ratio=0.0)
 
         per_k = max(3, top_k // len(filings))
-        # Semaphore limits concurrent DB connections (avoid overwhelming the PG server)
         sem = asyncio.Semaphore(5)
 
         async def _limited(filing: str) -> RetrievalResult:
@@ -258,10 +254,10 @@ async def retrieve(
             query=query,
             expanded_query=expand_query(query),
             chunks=per_filing[:top_k],
-            agreement_ratio=0.0,  # not meaningful across filings
+            agreement_ratio=0.0,
         )
 
-    # Temporal + complex: standard hybrid RAG
+    # Single filing (the normal case): hybrid RAG scoped to that filing only
     return await _hybrid_retrieve(query, doc_name, top_k)
 
 

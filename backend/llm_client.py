@@ -9,10 +9,15 @@ raw JSON so answerer.py can parse a single, stable shape.
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
+from threading import Lock
 from typing import Any, Dict
 
 from . import config
+
+logger = logging.getLogger(__name__)
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 _REQUEST_TIMEOUT_S = 30
@@ -55,6 +60,11 @@ def call_llm_json(
     except Exception as primary_error:
         if not config.LLM_FALLBACK_PROVIDER:
             raise
+        logger.warning(
+            "Primary provider '%s' (model=%s) failed: %s -- falling back to '%s' (model=%s)",
+            active_provider, model, primary_error,
+            config.LLM_FALLBACK_PROVIDER, config.FALLBACK_MODEL,
+        )
         try:
             raw = _dispatch(
                 config.LLM_FALLBACK_PROVIDER, system_prompt, user_prompt, config.FALLBACK_MODEL
@@ -69,6 +79,7 @@ def call_llm_json(
 
 
 def _dispatch(provider: str, system_prompt: str, user_prompt: str, model: str) -> str:
+    logger.info("llm_client dispatching provider=%s model=%s", provider, model)
     if provider == "azure_openai":
         return _call_azure_openai(system_prompt, user_prompt, model)
     if provider == "anthropic":
@@ -136,15 +147,84 @@ def _call_openai(system_prompt: str, user_prompt: str, model: str) -> str:
     return resp.choices[0].message.content
 
 
+class _RateLimiter:
+    """
+    Simple client-side token-spacing limiter: blocks just long enough to
+    keep calls under `calls_per_minute`. Cheaper than hitting a 429 and
+    retrying, and keeps a free-tier project from tripping abuse detection
+    via bursty request patterns. Thread-safe (FastAPI can serve requests
+    from multiple worker threads even though answerer.py calls this
+    synchronously inside an async endpoint).
+    """
+
+    def __init__(self, calls_per_minute: int) -> None:
+        self._min_interval = 60.0 / max(calls_per_minute, 1)
+        self._lock = Lock()
+        self._last_call = 0.0
+
+    def wait(self) -> None:
+        with self._lock:
+            elapsed = time.monotonic() - self._last_call
+            remaining = self._min_interval - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
+            self._last_call = time.monotonic()
+
+
+_gemini_limiter = _RateLimiter(config.GEMINI_RPM_LIMIT)
+
+
+def _is_retryable_error(exc: Exception) -> bool:
+    """
+    Best-effort detection of a transient error worth retrying -- both
+    429/quota (rate limit) and 503/UNAVAILABLE ("high demand") responses.
+    Checked by exception type name and message content since the exact
+    exception classes have moved between google-generativeai SDK versions
+    and this avoids a hard dependency on google.api_core.
+    """
+    name = type(exc).__name__.lower()
+    if any(s in name for s in ("resourceexhausted", "quota", "ratelimit", "serviceunavailable", "unavailable")):
+        return True
+    msg = str(exc).lower()
+    return any(s in msg for s in ("429", "quota", "rate limit", "503", "unavailable", "high demand"))
+
+
 def _call_gemini(system_prompt: str, user_prompt: str, model: str) -> str:
+    """
+    Calls Gemini with client-side rate limiting (GEMINI_RPM_LIMIT) to stay
+    under the free-tier cap proactively, plus exponential backoff retry
+    (GEMINI_MAX_RETRIES) for transient errors -- 429/quota (rate limited)
+    and 503/UNAVAILABLE ("high demand", common on the -latest alias) --
+    other errors (bad key, invalid request) raise immediately since
+    retrying won't help.
+    """
     import google.generativeai as genai
 
     genai.configure(api_key=config.GEMINI_API_KEY)
     gmodel = genai.GenerativeModel(model, system_instruction=system_prompt)
-    resp = gmodel.generate_content(
-        user_prompt, request_options={"timeout": _REQUEST_TIMEOUT_S}
-    )
-    return resp.text
+
+    last_error: Exception | None = None
+    for attempt in range(config.GEMINI_MAX_RETRIES):
+        _gemini_limiter.wait()
+        try:
+            resp = gmodel.generate_content(
+                user_prompt, request_options={"timeout": _REQUEST_TIMEOUT_S}
+            )
+            return resp.text
+        except Exception as exc:
+            last_error = exc
+            if not _is_retryable_error(exc):
+                raise
+            backoff_s = 2 ** attempt
+            logger.warning(
+                "Gemini transient error (attempt %d/%d) -- backing off %ds: %s",
+                attempt + 1, config.GEMINI_MAX_RETRIES, backoff_s, exc,
+            )
+            time.sleep(backoff_s)
+
+    raise RuntimeError(
+        f"Gemini still failing after {config.GEMINI_MAX_RETRIES} attempts (transient errors)"
+    ) from last_error
 
 
 def _call_ollama(system_prompt: str, user_prompt: str, model: str) -> str:
