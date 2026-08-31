@@ -366,7 +366,13 @@ def parse_filing(
     """
     html_content = _extract_html_from_sgml(html_content)
 
-    soup = BeautifulSoup(html_content, "html.parser")
+    # lxml (not the stdlib html.parser) is used here because real SEC EDGAR
+    # HTML is frequently malformed (unclosed <tr>/<td>/<p> are common in
+    # legacy filing-agent output). html.parser's simpler recovery heuristics
+    # can misconstruct the tree on malformed input, occasionally duplicating
+    # a single source element into multiple tree nodes -- lxml implements the
+    # HTML5 parsing/error-recovery algorithm and handles this correctly.
+    soup = BeautifulSoup(html_content, "lxml")
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
 

@@ -21,15 +21,13 @@ from pgvector import HalfVector
 from rank_bm25 import BM25Okapi
 
 from .config import (
-    AZURE_EMBEDDING_DEPLOYMENT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_API_VERSION,
-    AZURE_OPENAI_ENDPOINT, BM25_DIR, CHUNKS_TABLE, EMBEDDING_MODEL, EMBEDDING_PROVIDER,
+    AZURE_EMBED_BATCH_TOKEN_BUDGET, AZURE_EMBED_CHARS_PER_TOKEN, AZURE_EMBED_TPM_LIMIT,
+    AZURE_EMBED_TPM_UTILIZATION, AZURE_EMBEDDING_DEPLOYMENT, AZURE_OPENAI_API_KEY,
+    AZURE_OPENAI_API_VERSION, AZURE_OPENAI_ENDPOINT, BM25_DIR, CHUNKS_TABLE,
+    EMBEDDING_MODEL, EMBEDDING_PROVIDER,
 )
 from .db import get_sync_conn, get_async_conn, validate_table_name
 from .models import Chunk
-
-# Azure OpenAI embedding batch size.
-# 512 chunks × ~45 tokens/chunk ≈ 23K tokens per batch (well under 150K TPM).
-_AZURE_EMBED_BATCH = 512
 
 # PostgreSQL upsert batch size
 _PG_BATCH = 500
@@ -45,6 +43,11 @@ def _upsert_sql(table: str) -> str:
         text      = EXCLUDED.text,
         embedding = EXCLUDED.embedding
 """
+
+
+def _delete_sql(table: str) -> str:
+    table = validate_table_name(table)
+    return f"DELETE FROM {table} WHERE doc_name = %s"
 
 
 # ---------------------------------------------------------------------------
@@ -65,8 +68,41 @@ def _embed_texts(texts: List[str]) -> List[List[float]]:
     return model.encode(texts, show_progress_bar=False).tolist()
 
 
+def _estimate_tokens(text: str) -> int:
+    """Cheap token-count estimate (no tokenizer dependency needed for pacing)."""
+    return max(1, int(len(text) / AZURE_EMBED_CHARS_PER_TOKEN))
+
+
+def _build_token_budget_batches(texts: List[str], token_budget: int) -> List[List[str]]:
+    """
+    Groups texts into batches whose estimated token sum stays under token_budget.
+    Real chunk sizes vary widely post-Plan-A (a short footnote vs. an 800-word
+    table section), so a fixed chunk-count-per-batch can no longer reliably
+    predict request size the way it could when chunks were all small and atomic.
+    A single oversized text becomes its own one-item batch rather than blowing
+    the budget of a shared batch.
+    """
+    batches: List[List[str]] = []
+    current: List[str] = []
+    current_tokens = 0
+    for text in texts:
+        t = _estimate_tokens(text)
+        if current and current_tokens + t > token_budget:
+            batches.append(current)
+            current, current_tokens = [], 0
+        current.append(text)
+        current_tokens += t
+    if current:
+        batches.append(current)
+    return batches
+
+
 def _embed_azure(texts: List[str]) -> List[List[float]]:
-    """Calls Azure OpenAI embeddings API in safe batches with rate-limit handling."""
+    """
+    Calls Azure OpenAI embeddings API in token-budget-sized batches, paced to
+    the configured TPM quota (see AZURE_EMBED_* in config.py), with rate-limit
+    retry handling as a safety net on top of that pacing.
+    """
     import time
     from openai import AzureOpenAI, RateLimitError
 
@@ -76,8 +112,11 @@ def _embed_azure(texts: List[str]) -> List[List[float]]:
         api_version=AZURE_OPENAI_API_VERSION,
     )
     embeddings: List[List[float]] = []
-    for start in range(0, len(texts), _AZURE_EMBED_BATCH):
-        batch = texts[start : start + _AZURE_EMBED_BATCH]
+    batches = _build_token_budget_batches(texts, AZURE_EMBED_BATCH_TOKEN_BUDGET)
+    safe_tpm = AZURE_EMBED_TPM_LIMIT * AZURE_EMBED_TPM_UTILIZATION
+    delay_seconds = (AZURE_EMBED_BATCH_TOKEN_BUDGET / safe_tpm) * 60
+
+    for i, batch in enumerate(batches):
         for attempt in range(10):
             try:
                 response = client.embeddings.create(input=batch, model=AZURE_EMBEDDING_DEPLOYMENT)
@@ -88,9 +127,8 @@ def _embed_azure(texts: List[str]) -> List[List[float]]:
                 time.sleep(30)
         else:
             raise RuntimeError("Azure embedding rate limit exceeded after 10 retries.")
-        if start + _AZURE_EMBED_BATCH < len(texts):
-            # 23K tokens per batch; 150K TPM → need ~9s minimum between batches.
-            time.sleep(10)
+        if i + 1 < len(batches):
+            time.sleep(delay_seconds)
     return embeddings
 
 
@@ -100,8 +138,16 @@ def _embed_azure(texts: List[str]) -> List[List[float]]:
 
 def index_chunks(chunks: List[Chunk], doc_name: str, table: str = CHUNKS_TABLE) -> None:
     """
-    Upserts chunks into PostgreSQL (dense) and rebuilds the per-filing BM25 pickle (sparse).
-    Synchronous — called from the ingest CLI and the /upload endpoint.
+    Replaces a filing's chunks in PostgreSQL (dense) and rebuilds its BM25
+    pickle (sparse). Synchronous — called from the ingest CLI and the
+    /upload endpoint.
+
+    Idempotent per doc_name: existing rows for doc_name are deleted before
+    the new set is inserted, so re-ingesting a filing whose chunk count or
+    chunk_id scheme changed (e.g. after a chunking-logic fix) can never
+    leave stale orphaned rows behind -- it's always a clean replace, not a
+    same-id-only upsert. Mirrors the delete-then-insert pattern
+    facts_indexer.ingest_filing_facts() already uses for financial_facts.
 
     `table` defaults to config.CHUNKS_TABLE, so pointing CHUNKS_TABLE at an
     alternate table (e.g. "chunks_plan_a") redirects every caller here without
@@ -129,9 +175,11 @@ def index_chunks(chunks: List[Chunk], doc_name: str, table: str = CHUNKS_TABLE) 
         for i, c in enumerate(chunks)
     ]
 
+    delete_sql = _delete_sql(table)
     upsert_sql = _upsert_sql(table)
     with get_sync_conn() as conn:
         with conn.cursor() as cur:
+            cur.execute(delete_sql, (doc_name,))
             for start in range(0, len(rows), _PG_BATCH):
                 cur.executemany(upsert_sql, rows[start : start + _PG_BATCH])
         conn.commit()

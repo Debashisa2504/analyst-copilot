@@ -181,7 +181,9 @@ def ingest_filing_facts(doc_name: str) -> int:
     raw = filing_path.read_bytes().decode("utf-8", errors="replace")
     raw = _extract_html_from_sgml(raw)
 
-    soup = BeautifulSoup(raw, "html.parser")
+    # See backend/parser.py's parse_filing() for why lxml is used instead of
+    # the stdlib html.parser (malformed real-world SEC HTML recovery).
+    soup = BeautifulSoup(raw, "lxml")
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
 

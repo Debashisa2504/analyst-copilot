@@ -90,6 +90,26 @@ AZURE_EMBEDDING_DEPLOYMENT = os.getenv("AZURE_EMBEDDING_DEPLOYMENT", "text-embed
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
 # --------------------------------------------------------------------------
+# Embedding rate-limit pacing (Azure OpenAI only; the "local" provider is
+# unaffected -- it never calls a rate-limited API)
+# --------------------------------------------------------------------------
+# Set AZURE_EMBED_TPM_LIMIT to match your ACTUAL deployment's quota
+# (Azure AI Foundry -> Deployments -> your embedding deployment ->
+# "Rate limit (Tokens per minute)"). Batches are sized by an estimated
+# token budget rather than a fixed chunk count, since real chunk sizes
+# vary widely post-Plan-A (a short footnote vs. an 800-word table block).
+AZURE_EMBED_TPM_LIMIT = int(os.getenv("AZURE_EMBED_TPM_LIMIT", 140_000))
+# Fraction of the TPM quota to actually target, leaving headroom for the
+# char-per-token estimate being approximate and for quota-window jitter.
+AZURE_EMBED_TPM_UTILIZATION = float(os.getenv("AZURE_EMBED_TPM_UTILIZATION", 0.7))
+# Target tokens per single embeddings.create() call.
+AZURE_EMBED_BATCH_TOKEN_BUDGET = int(os.getenv("AZURE_EMBED_BATCH_TOKEN_BUDGET", 40_000))
+# Rough chars-per-token for English text (OpenAI's own rule of thumb is ~4);
+# biased slightly lower (more tokens per char) since financial text is dense
+# with numbers/punctuation, which tends to tokenize less efficiently than prose.
+AZURE_EMBED_CHARS_PER_TOKEN = float(os.getenv("AZURE_EMBED_CHARS_PER_TOKEN", 3.5))
+
+# --------------------------------------------------------------------------
 # Chunking
 # --------------------------------------------------------------------------
 CHUNK_SIZE_WORDS = int(os.getenv("CHUNK_SIZE_WORDS", 400))
