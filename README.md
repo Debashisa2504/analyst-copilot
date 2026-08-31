@@ -2,7 +2,7 @@
 
 > "An assistant that invents a number is worse than no assistant at all. So ours would rather say *'not found in this filing.'*"
 
-**Team: The AI Monkeys** · Aakansha Sharma · Debashisa Behera · _[Yashaswi Sahu]_
+**Team: The AI Monkeys** · Aakansha Sharma · Debashisa Behera · Yashaswi Sahu
 The Analyst Copilot Hackathon 2026
 
 ---
