@@ -17,7 +17,9 @@ from typing import List, Optional
 
 from bs4 import BeautifulSoup, Tag
 
-from .config import MIN_PAGE_BREAK_MARKERS, WORDS_PER_PAGE_FALLBACK
+from .config import (
+    MIN_PAGE_BREAK_MARKERS, STATEMENT_HEADING_PAGE_SPAN, WORDS_PER_PAGE_FALLBACK,
+)
 from .models import ParsedFiling, PageNumMethod, Segment, ChunkType
 from .statement_utils import (
     STATEMENT_KEYWORDS as SECTION_KEYWORDS,
@@ -384,7 +386,11 @@ def parse_filing(
     current_page = 1
     word_count = 0
     active_units: Optional[str] = None
+    # A statement heading only labels tables within STATEMENT_HEADING_PAGE_SPAN
+    # pages of it; otherwise one heading would tag every later note table in
+    # the filing as e.g. cash_flow (see config).
     active_section = "other"
+    active_section_page: Optional[int] = None
     footnote_defs = link_footnotes(soup.get_text(" ", strip=True)[:200_000])
 
     body = soup.body or soup
@@ -455,6 +461,7 @@ def parse_filing(
             section = _classify_section(heading_text)
             if section != "other":
                 active_section = section
+                active_section_page = current_page
             continue
 
         if element.name == "table":
@@ -473,6 +480,13 @@ def parse_filing(
             table_units = extract_unit_header(unit_scan) or active_units
             if table_units:
                 active_units = table_units
+            # A statement heading pages back no longer describes this table.
+            section_for_table = (
+                active_section
+                if active_section_page is not None
+                and current_page - active_section_page <= STATEMENT_HEADING_PAGE_SPAN
+                else "other"
+            )
             facts = parse_table_to_facts(element, doc_name, units=active_units)
             for fact in facts:
                 effective_page = current_page + offset
@@ -485,7 +499,7 @@ def parse_filing(
                         table_html=None,
                         units=active_units,
                         segment_type=ChunkType.TABLE_ROW,
-                        section_type=active_section,
+                        section_type=section_for_table,
                     )
                 )
             # Prevent descending into this leaf table's cells again as prose.
@@ -517,6 +531,7 @@ def parse_filing(
                 section = _classify_section_strict(text)
                 if section != "other":
                     active_section = section
+                    active_section_page = current_page
 
             maybe_page_units = extract_unit_header(text)
             if maybe_page_units:
