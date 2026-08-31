@@ -68,6 +68,22 @@ _REL_TOL = 0.006   # 0.6 %
 _ABS_TOL = 0.01    # for values near zero
 
 
+def _is_bare_number(text: str) -> bool:
+    """
+    True if, after removing numeric tokens and punctuation, almost nothing
+    else is left (e.g. "$1577.00" or "1500 million") -- i.e. the number IS
+    the whole answer, so a numeric mismatch is definitive on its own and
+    doesn't need an LLM second opinion. False for answers with real
+    surrounding text ("Yes, ... in Q2 of FY2022"), where a numeric mismatch
+    could be an incidental digit or a different-but-equivalent supporting
+    figure, and the semantic judge should get a look.
+    """
+    normalized = normalize_answer(text)
+    stripped = re.sub(r"-?\d+(?:\.\d+)?", "", normalized)
+    stripped = re.sub(r"[\s.,;:()\-]", "", stripped)
+    return len(stripped) <= 12  # allows a short unit word like "million"/"usd"
+
+
 def _numbers_match(pred_nums: List[float], gt_nums: List[float]) -> bool:
     """True when any pred number is within tolerance of any GT number."""
     for p in pred_nums:
@@ -162,23 +178,33 @@ def answers_match(predicted: str, ground_truth: str) -> bool:
     """
     Two-tier answer comparison:
       1. Numeric fast-path — deterministic, handles units and sign conventions.
-      2. LLM semantic judge — handles paraphrasing, directionality, entities.
+         A numeric MATCH always short-circuits to True (no LLM call needed).
+         A numeric MISMATCH is only trusted as definitively wrong when both
+         answers are essentially bare numbers with no other content -- e.g.
+         "$1577.00" vs "1500" really is just a wrong number. When either side
+         has real surrounding text, a mismatch doesn't by itself prove the
+         answer wrong (an incidental digit like "Q2" can poison the numeric
+         extraction, or the two answers may cite different-but-equivalent
+         supporting figures for the same correct conclusion), so it falls
+         through to the semantic judge instead.
+      2. LLM semantic judge — handles paraphrasing, directionality, entities,
+         and any case where a numeric mismatch was inconclusive.
     """
     # ── Tier 1: numeric ──────────────────────────────────────────────────────
     pred_nums = extract_numbers(predicted)
     gt_nums   = extract_numbers(ground_truth)
 
-    # Only use numeric comparison when BOTH sides have numbers; otherwise
-    # a year like "2023" in the question text creates spurious matches.
     if pred_nums and gt_nums:
-        # Filter out obvious year-like numbers (1900–2100) if BOTH sides only
-        # contain years — those are context, not the answer value.
+        # Filter out obvious year-like numbers (1900–2100) — those are
+        # context (e.g. "FY2022"), not the answer value.
         non_year = lambda nums: [n for n in nums if not (1900 <= n <= 2100)]
         p_vals = non_year(pred_nums)
         g_vals = non_year(gt_nums)
         if p_vals and g_vals:
-            return _numbers_match(p_vals, g_vals)
-        # If both sides are year-only numbers, fall through to LLM
+            if _numbers_match(p_vals, g_vals):
+                return True
+            if _is_bare_number(predicted) and _is_bare_number(ground_truth):
+                return False
 
     # ── Tier 2: LLM semantic judge ───────────────────────────────────────────
     return _llm_semantic_match(predicted, ground_truth)
