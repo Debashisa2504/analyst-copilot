@@ -2,7 +2,7 @@
 
 > "An assistant that invents a number is worse than no assistant at all. So ours would rather say *'not found in this filing.'*"
 
-**Team: The AI Monkeys** · Aakansha Sharma · Debashisa Behera · _[member 3]_
+**Team: The AI Monkeys** · Aakansha Sharma · Debashisa Behera · _[Yashaswi Sahu]_
 The Analyst Copilot Hackathon 2026
 
 ---
@@ -218,11 +218,12 @@ Scored with the hackathon rubric, which prices a wrong answer at what it actuall
 
 | Metric | Value |
 |---|---|
-| Net score | **+5** |
-| Correct (+1) | 16 |
-| Honest abstentions (0) | 8 |
-| Wrong (−1) | 11 |
-| Precision | **0.593** |
+| Net score | **+9** |
+| Correct (+1) | 17 |
+| Honest abstentions (0) | 10 |
+| Correct answer, wrong page (0) | 6 |
+| Wrong (−1) | 8 |
+| Precision | **0.680** |
 
 `eval/reserve_filings.py` holds a filing-level holdout that ingestion skips by default, so thresholds are never tuned against filings the system will be judged on.
 
