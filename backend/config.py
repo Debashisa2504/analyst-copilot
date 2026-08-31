@@ -32,13 +32,13 @@ EVAL_LOG_DIR = DATA_DIR / "eval_logs"
 # Example (PowerShell):
 #   $env:CHUNKS_TABLE = "chunks_plan_a"; $env:BM25_DIR_NAME = "bm25_plan_a"
 #   python -m backend.ingest --all
-CHUNKS_TABLE = os.getenv("CHUNKS_TABLE", "chunks")
+CHUNKS_TABLE = os.getenv("CHUNKS_TABLE", "chunks_section_chunked")
 BM25_DIR = DATA_DIR / os.getenv("BM25_DIR_NAME", "bm25")
 
 for d in (FILINGS_DIR, DATA_DIR, CHROMA_DIR, BM25_DIR, EVAL_LOG_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
-if CHUNKS_TABLE != "chunks":
+if CHUNKS_TABLE != "chunks_section_chunked":
     print(f"[config] Using NON-default chunks table: '{CHUNKS_TABLE}' (BM25 dir: {BM25_DIR})")
 
 # --------------------------------------------------------------------------
@@ -62,6 +62,10 @@ AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-pre
 
 # Gemini (Draft pass — free tier, fast extraction)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+# Free-tier throttling: conservative default — raise GEMINI_RPM_LIMIT in .env
+# to match your actual quota shown in AI Studio (avoids 429s proactively).
+GEMINI_RPM_LIMIT = int(os.getenv("GEMINI_RPM_LIMIT", "8"))
+GEMINI_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "5"))
 
 # Ollama: local inference daemon (https://ollama.com), no API key needed.
 # Run `ollama serve` + `ollama pull <model>` first. Fully offline once the

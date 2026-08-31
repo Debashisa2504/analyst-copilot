@@ -28,24 +28,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rank_bm25 import BM25Okapi
 
-from backend.config import BM25_DIR
-from backend.db import get_sync_conn
+from backend.config import BM25_DIR, CHUNKS_TABLE
+from backend.db import get_sync_conn, validate_table_name
 from backend.indexer import _tokenize
 from backend.models import Chunk, ChunkType, PageNumMethod
 
 
 _FETCH_SQL = """
     SELECT chunk_id, doc_name, page_num, page_num_method, chunk_type, units, section_type, text
-    FROM chunks
+    FROM {table}
     {where}
     ORDER BY doc_name, chunk_id
 """
 
 
 def _fetch_chunks(doc_name: str | None = None) -> dict[str, list[Chunk]]:
-    """Returns {doc_name: [Chunk, ...]} from PostgreSQL."""
+    """Returns {{doc_name: [Chunk, ...]}} from PostgreSQL (table = CHUNKS_TABLE)."""
+    table = validate_table_name(CHUNKS_TABLE)
     where = f"WHERE doc_name = '{doc_name}'" if doc_name else ""
-    sql = _FETCH_SQL.format(where=where)
+    sql = _FETCH_SQL.format(table=table, where=where)
 
     by_doc: dict[str, list[Chunk]] = defaultdict(list)
     with get_sync_conn() as conn:
@@ -68,7 +69,7 @@ def _fetch_chunks(doc_name: str | None = None) -> dict[str, list[Chunk]]:
 
 
 def rebuild(doc_name: str | None = None) -> None:
-    print(f"[rebuild_bm25] Fetching chunks from PostgreSQL ...")
+    print("[rebuild_bm25] Fetching chunks from PostgreSQL ...")
     by_doc = _fetch_chunks(doc_name)
 
     if not by_doc:
@@ -85,7 +86,7 @@ def rebuild(doc_name: str | None = None) -> None:
         path = BM25_DIR / f"{doc}.pkl"
         with open(path, "wb") as f:
             pickle.dump({"bm25": bm25, "chunks": chunks}, f)
-        print(f"  [{i}/{total_docs}] {doc}: {len(chunks)} chunks → {path.name}")
+        print(f"  [{i}/{total_docs}] {doc}: {len(chunks)} chunks -> {path.name}")
 
     print("[rebuild_bm25] Done.")
 

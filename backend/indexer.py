@@ -289,7 +289,7 @@ def query_bm25(query: str, doc_name: str, top_k: int = 10) -> List[Dict[str, Any
                     "page_num_method": chunk.page_num_method.value,
                     "chunk_type": chunk.chunk_type.value,
                     "units": chunk.units or "",
-                    "section_type": chunk.section_type or "other",
+                    "section_type": getattr(chunk, "section_type", None) or "other",
                 },
                 "score": float(score),
             })

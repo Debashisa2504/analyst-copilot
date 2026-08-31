@@ -60,19 +60,16 @@ def find_similar_pattern(question: str, threshold: float = 0.6) -> Optional[Dict
 def classify_query(question: str) -> str:
     """
     Simple keyword-based query classifier.
-    Returns: 'simple' | 'temporal' | 'cross_company' | 'complex'
+    Returns: 'simple' | 'temporal' | 'complex'
 
-    'simple'        -> single numeric fact lookup (likely in SQLite cache)
-    'temporal'      -> asks about a specific year/quarter/period
-    'cross_company' -> asks about multiple companies
-    'complex'       -> narrative/reasoning question
+    'simple'   -> single numeric fact lookup (likely in SQLite cache)
+    'temporal' -> asks about a specific year/quarter/period
+    'complex'  -> narrative/reasoning question
+
+    Scope (which filing(s) to search) is always determined by the caller,
+    not by this classifier.
     """
     q = question.lower()
-
-    # Cross-company
-    cross_words = ["compare", "versus", "vs", "both companies", "all companies"]
-    if any(w in q for w in cross_words):
-        return "cross_company"
 
     # Temporal: explicit fiscal period
     if re.search(r"\b(fy|q[1-4]|fiscal|year|quarter)\s*\d{4}\b", q) or \
