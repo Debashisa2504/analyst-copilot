@@ -54,6 +54,17 @@ convert and answer in the requested unit. For example, if the table shows
 "8,738" in millions and the question asks for billions, answer "$8.7 billion"
 and set confidence >= 0.8 because the underlying number is clearly present.
 
+Metric applicability: a question may offer you the option to say a metric
+"is not useful/relevant/something an analyst would ask about" for this
+company. Do NOT take that option just because the company is an
+unconventional example for that metric. Compute the metric whenever the
+line items it needs (e.g. current assets, current liabilities, inventory
+for a quick ratio) are present in the data — that is true for almost any
+normal operating company. Only decline, and explain why, when the metric
+is structurally inapplicable to how the company reports (e.g. a bank or
+insurer that doesn't present a classified current/non-current balance
+sheet at all).
+
 Respond with STRICT JSON only, no prose outside the JSON object:
 {"answer": "<one or two sentence answer>",
  "value": "<the specific extracted number or short value, or null>",

@@ -32,8 +32,11 @@ EVAL_LOG_DIR = DATA_DIR / "eval_logs"
 # Example (PowerShell):
 #   $env:CHUNKS_TABLE = "chunks_plan_a"; $env:BM25_DIR_NAME = "bm25_plan_a"
 #   python -m backend.ingest --all
+# NOTE: these two MUST describe the same corpus. The dense index (table) and the
+# sparse index (BM25 directory) are fused at query time, so pointing them at
+# different corpora silently produces nonsense results.
 CHUNKS_TABLE = os.getenv("CHUNKS_TABLE", "chunks_section_chunked")
-BM25_DIR = DATA_DIR / os.getenv("BM25_DIR_NAME", "bm25")
+BM25_DIR = DATA_DIR / os.getenv("BM25_DIR_NAME", "bm25_section_chunked")
 
 for d in (FILINGS_DIR, DATA_DIR, CHROMA_DIR, BM25_DIR, EVAL_LOG_DIR):
     d.mkdir(parents=True, exist_ok=True)
@@ -90,6 +93,11 @@ FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", OLLAMA_MODEL)
 EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "azure_openai")
 # Azure deployment name for the embedding model (set in Azure AI Studio)
 AZURE_EMBEDDING_DEPLOYMENT = os.getenv("AZURE_EMBEDDING_DEPLOYMENT", "text-embedding-3-small")
+# Output dimension of the embedding model above -- MUST match the deployment, and
+# must match the halfvec(N) column already created in the DB:
+#   text-embedding-3-large -> 3072   text-embedding-3-small -> 1536
+# Changing this requires recreating the chunks table's embedding column.
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", 3072))
 # Fallback local model (used only when EMBEDDING_PROVIDER=local)
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
@@ -121,6 +129,13 @@ CHUNK_OVERLAP_WORDS = int(os.getenv("CHUNK_OVERLAP_WORDS", 50))
 # Section-aware table grouping (Plan A): same-section TABLE_ROW segments are
 # accumulated into one chunk until this word budget is hit.
 TABLE_CHUNK_SIZE_WORDS = int(os.getenv("TABLE_CHUNK_SIZE_WORDS", 800))
+# How many pages a financial-statement heading ("Consolidated Statements of
+# Cash Flows") stays in effect for tables that follow it. A primary statement
+# spans one page, sometimes continuing onto the next. Without this bound one
+# heading would classify EVERY later note table in the document as that
+# statement type, which both mislabels chunks and floods the structured-facts
+# context with thousands of irrelevant rows.
+STATEMENT_HEADING_PAGE_SPAN = int(os.getenv("STATEMENT_HEADING_PAGE_SPAN", 1))
 
 # --------------------------------------------------------------------------
 # Retrieval

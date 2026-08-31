@@ -14,10 +14,7 @@ import re
 import psycopg
 from pgvector.psycopg import register_vector, register_vector_async
 
-from .config import CHUNKS_TABLE, DATABASE_URL
-
-# Matches text-embedding-3-large output dimension
-EMBEDDING_DIM = 3072
+from .config import CHUNKS_TABLE, DATABASE_URL, EMBEDDING_DIM
 
 # Table names are interpolated directly into SQL below (identifiers can't be
 # passed as psycopg placeholders), so every caller-supplied table name is

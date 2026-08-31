@@ -23,7 +23,10 @@ from typing import Any, Dict, List, Optional
 import psycopg
 from bs4 import BeautifulSoup, Tag
 
-from .config import DATABASE_URL, FILINGS_DIR, MIN_PAGE_BREAK_MARKERS, WORDS_PER_PAGE_FALLBACK
+from .config import (
+    DATABASE_URL, FILINGS_DIR, MIN_PAGE_BREAK_MARKERS,
+    STATEMENT_HEADING_PAGE_SPAN, WORDS_PER_PAGE_FALLBACK,
+)
 from .parser import (
     _build_header_intervals,
     _extract_html_from_sgml,
@@ -219,8 +222,11 @@ def ingest_filing_facts(doc_name: str) -> int:
     current_page = 1
     word_count = 0
     active_units: Optional[str] = None
-    # Track the most recent heading/bold text seen before each table
+    # Track the most recent heading/bold text seen before each table, and the
+    # page it appeared on -- a heading only classifies tables within
+    # STATEMENT_HEADING_PAGE_SPAN pages of it (see config).
     heading_buffer = ""
+    heading_page: Optional[int] = None
 
     all_elements = [el for el in body.descendants if isinstance(el, Tag)]
     rows_to_insert: List[Dict[str, Any]] = []
@@ -236,6 +242,7 @@ def ingest_filing_facts(doc_name: str) -> int:
             t = element.get_text(" ", strip=True)
             if t:
                 heading_buffer = t
+                heading_page = current_page
 
         if element.name == "table":
             # Skip layout tables (those that contain nested tables)
@@ -249,10 +256,16 @@ def ingest_filing_facts(doc_name: str) -> int:
             if table_units:
                 active_units = table_units
 
-            # Detect statement type: prefer heading_buffer, fall back to
+            # Detect statement type: prefer a heading that is still in scope
+            # (within STATEMENT_HEADING_PAGE_SPAN pages -- a statement heading
+            # must not classify note tables pages later), then fall back to
             # scanning the table's own text (covers tables whose heading is
             # in a caption row or in the first data row).
-            stmt_type = _detect_statement_type(heading_buffer)
+            heading_in_scope = (
+                heading_page is not None
+                and current_page - heading_page <= STATEMENT_HEADING_PAGE_SPAN
+            )
+            stmt_type = _detect_statement_type(heading_buffer) if heading_in_scope else "other"
             if stmt_type == "other":
                 stmt_type = _detect_statement_type(unit_scan[:800])
             facts = _parse_structured_facts(element, units=active_units)
@@ -292,6 +305,7 @@ def ingest_filing_facts(doc_name: str) -> int:
                 _stmt = _text_is_statement_heading(text)
                 if _stmt != "other":
                     heading_buffer = text
+                    heading_page = current_page
             maybe_units = extract_unit_header(text)
             if maybe_units:
                 active_units = maybe_units
